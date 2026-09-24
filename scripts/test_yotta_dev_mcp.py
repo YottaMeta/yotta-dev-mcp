@@ -67,7 +67,16 @@ class YottaDevMcpTest(unittest.TestCase):
         self.assertEqual(result["supportedVersions"], ["2026-07-28"])
         self.assertIn("tools", result["capabilities"])
 
-    def test_tools_list_has_six_contracts(self):
+    def test_modern_ping(self):
+        response = server.handle_message({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "ping",
+            "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}},
+        })
+        self.assertEqual(response["result"]["resultType"], "complete")
+
+    def test_tools_list_has_twelve_contracts(self):
         response = server.handle_message({
             "jsonrpc": "2.0",
             "id": 3,
@@ -82,9 +91,16 @@ class YottaDevMcpTest(unittest.TestCase):
             "review_code",
             "review_diff",
             "mcp_doctor",
+            "scan_secrets",
+            "scan_dependencies",
+            "check_publish_readiness",
+            "run_checks",
+            "scaffold_skill",
+            "workflow_state",
         ])
         for tool in tools:
             self.assertEqual(tool["inputSchema"]["type"], "object")
+            self.assertIs(tool["inputSchema"].get("additionalProperties"), False)
 
     def test_repo_map_tool(self):
         response = self.call("repo_map", {"path": str(self.root)})
@@ -107,6 +123,39 @@ class YottaDevMcpTest(unittest.TestCase):
     def test_unknown_tool_is_error(self):
         response = self.call("nope", {})
         self.assertTrue(response["result"]["isError"])
+
+    def test_scan_secrets_tool(self):
+        secret = self.root / "secret.env"
+        secret.write_text("TOKEN=abcdefghijklmnopqrstuvwxyz123456\n", encoding="utf-8")
+        response = self.call("scan_secrets", {"path": str(self.root)})
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertGreaterEqual(len(payload["findings"]), 1)
+        self.assertFalse(response["result"]["isError"])
+
+    def test_workflow_state_tool(self):
+        workflow = self.root / ".workflow"
+        workflow.mkdir()
+        for name in ("STATE.md", "TASKS.md", "DECISIONS.md", "ROADMAP.md"):
+            (workflow / name).write_text("# " + name + "\n", encoding="utf-8")
+        response = self.call("workflow_state", {"root": str(self.root)})
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertTrue(payload["ok"])
+        self.assertFalse(response["result"]["isError"])
+
+    def test_run_checks_requires_explicit_execution(self):
+        (self.root / "test_sample.py").write_text(
+            "import unittest\n\n"
+            "class SampleTest(unittest.TestCase):\n"
+            "    def test_ok(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        blocked = self.call("run_checks", {"kind": "python-unittest", "cwd": str(self.root)})
+        self.assertTrue(blocked["result"]["isError"])
+        allowed = self.call("run_checks", {
+            "kind": "python-unittest", "cwd": str(self.root), "allow_execute": True,
+        })
+        self.assertFalse(allowed["result"]["isError"])
 
     def test_stdio_roundtrip(self):
         script = Path(__file__).with_name("yotta_dev_mcp.py")
@@ -135,7 +184,7 @@ class YottaDevMcpTest(unittest.TestCase):
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         self.assertEqual(len(lines), 2)
         self.assertEqual(json.loads(lines[0])["result"]["serverInfo"]["name"], "yotta-dev-mcp")
-        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 6)
+        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 12)
 
 
 if __name__ == "__main__":

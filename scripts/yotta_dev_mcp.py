@@ -56,7 +56,9 @@ def _tool(name, arguments):
 TOOL_HANDLERS = {
     name: (lambda arguments, tool_name=name: _tool(tool_name, arguments))
     for name in ("repo_map", "find_code", "compress_output",
-                 "review_code", "review_diff", "mcp_doctor")
+                 "review_code", "review_diff", "mcp_doctor",
+                 "scan_secrets", "scan_dependencies", "check_publish_readiness",
+                 "run_checks", "scaffold_skill", "workflow_state")
 }
 
 
@@ -77,6 +79,7 @@ def mcp_tools():
                                   "description": "Maximum source files to inspect (default 2000)"},
                 },
                 "required": ["path"],
+                "additionalProperties": False,
             },
         },
         {
@@ -98,6 +101,7 @@ def mcp_tools():
                                       "description": "Context lines around each match"},
                 },
                 "required": ["path", "query"],
+                "additionalProperties": False,
             },
         },
         {
@@ -117,6 +121,7 @@ def mcp_tools():
                     "head_lines": {"type": "integer", "minimum": 0},
                     "tail_lines": {"type": "integer", "minimum": 0},
                 },
+                "additionalProperties": False,
             },
         },
         {
@@ -133,6 +138,7 @@ def mcp_tools():
                     "text": {"type": "string", "description": "Review this text instead"},
                     "max_findings": {"type": "integer", "minimum": 1},
                 },
+                "additionalProperties": False,
             },
         },
         {
@@ -149,6 +155,7 @@ def mcp_tools():
                     "base": {"type": "string", "description": "Optional git base revision"},
                     "max_findings": {"type": "integer", "minimum": 1},
                 },
+                "additionalProperties": False,
             },
         },
         {
@@ -163,6 +170,117 @@ def mcp_tools():
                     "skills_dirs": {"type": "array", "items": {"type": "string"}},
                     "config_paths": {"type": "array", "items": {"type": "string"}},
                 },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "scan_secrets",
+            "description": (
+                "Scan local source, configuration and env files for credentials "
+                "and high-entropy tokens, returning redacted evidence. Use before "
+                "commit, publishing or sharing a repository."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File or repository path"},
+                    "text": {"type": "string", "description": "Scan this text instead"},
+                    "max_findings": {"type": "integer", "minimum": 1},
+                    "include_git_history": {"type": "boolean", "description": "Also scan bounded git history; default false"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "scan_dependencies",
+            "description": (
+                "Inspect local dependency manifests and lockfiles for missing "
+                "locks, unpinned ranges, insecure sources and local-only paths. "
+                "Offline heuristic only; no package-existence lookup."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Repository path"},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "check_publish_readiness",
+            "description": (
+                "Check a local package or skill for version alignment, required "
+                "release files, repository metadata and public publish access. "
+                "Use before tagging or publishing."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Package or skill directory"},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "run_checks",
+            "description": (
+                "Run a whitelisted test, lint or compile check in a local project "
+                "and return a bounded structured summary. Execution is explicit: "
+                "use only when the user asks to run checks."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["python-unittest", "pytest", "python-compile", "npm-test", "npm-lint"],
+                    },
+                    "cwd": {"type": "string", "description": "Project directory"},
+                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600},
+                    "allow_execute": {"type": "boolean", "description": "Must be true; default false"},
+                },
+                "required": ["kind", "cwd"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "scaffold_skill",
+            "description": (
+                "Plan or create a minimal skill scaffold with SKILL.md, package.json, "
+                "README, changelog and a starter script. Dry-run is the default."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Lower-case skill slug"},
+                    "output_dir": {"type": "string", "description": "Parent output directory"},
+                    "description": {"type": "string"},
+                    "apply": {"type": "boolean", "description": "Write files; default false"},
+                },
+                "required": ["name", "output_dir"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "workflow_state",
+            "description": (
+                "Read .workflow state files and optionally append one log line with "
+                "an explicit date. Use for session recovery and handoff checks."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "root": {"type": "string", "description": "Project root"},
+                    "action": {"type": "string", "enum": ["read", "append-log", "append-file"]},
+                    "date": {"type": "string", "description": "YYYY-MM-DD for append-log"},
+                    "text": {"type": "string"},
+                    "file": {"type": "string", "enum": ["STATE.md", "TASKS.md", "DECISIONS.md", "ROADMAP.md"]},
+                    "apply": {"type": "boolean", "description": "Write; default false"},
+                },
+                "required": ["root"],
+                "additionalProperties": False,
             },
         },
     ]
@@ -225,6 +343,8 @@ def handle_message(msg):
                     ),
                 }, (3600000, "public")),
             }
+        if method == "ping":
+            return {"jsonrpc": "2.0", "id": rid, "result": _modern_ok({})}
         if method == "tools/list":
             return {
                 "jsonrpc": "2.0",

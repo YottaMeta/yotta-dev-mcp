@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.YottaMeta/yotta-dev-mcp",
-  "description": "Deterministic local development tools over stdio MCP.",
+  "description": "Deterministic local development tools over stdio MCP: twelve tools for code mapping, review, secret/dependency scanning, release checks, whitelisted checks, scaffolding and workflow state.",
   "repository": {
     "url": "https://github.com/YottaMeta/yotta-dev-mcp",
     "source": "github"

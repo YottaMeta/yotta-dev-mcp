@@ -1,6 +1,6 @@
 ---
 name: yotta-dev-mcp
-description: 开发能力 MCP（yotta-dev-mcp）—— 把确定性、只读、本地的开发工具暴露为 stdio MCP server：repo_map（代码库地图）、find_code（符号/文本定位）、compress_output（长输出压缩）、review_code（多规则代码评审）、review_diff（只看新增行）、mcp_doctor（技能与 MCP 配置体检）。触发：让 AI 在陌生项目里先做结构盘点、定位代码、评审改动、压缩长日志、检查本机技能/MCP 配置时；或用户说 开发能力 MCP / yotta-dev-mcp / 代码库地图 / 代码评审 MCP 等。边界：Python 3.8+ 标准库、离线默认、6 个工具只读；不上传源码、不自动修改、不提交、不联网查询包是否存在。
+description: 开发能力 MCP（yotta-dev-mcp）—— 把确定性、只读默认、本地的开发工具暴露为 stdio MCP server：repo_map / find_code / compress_output / review_code / review_diff / mcp_doctor / scan_secrets / scan_dependencies / check_publish_readiness / run_checks / scaffold_skill / workflow_state。触发：让 AI 在陌生项目里先做结构盘点、定位代码、评审改动、扫描密钥/依赖、检查发布就绪、运行白名单检查、生成脚手架或读取 .workflow 状态时；或用户说 开发能力 MCP / yotta-dev-mcp / 代码库地图 / 代码评审 MCP 等。边界：Python 3.8+ 标准库、离线默认；除 run_checks（显式 allow_execute）与 scaffold_skill / workflow_state 的显式 apply 外均为只读；不上传源码、不自动修改、不提交、不联网查询包是否存在。
 version: 0.1.0
 license: MIT
 ---
@@ -45,18 +45,23 @@ python scripts/yotta_dev_mcp.py
 | `review_code` | 规则化代码评审，带行号与建议 | 否 |
 | `review_diff` | 只评审 diff 的新增行 | 否 |
 | `mcp_doctor` | 技能版本与 MCP JSON 配置体检 | 否 |
+| `scan_secrets` | 密钥 / 凭据 / 高熵令牌扫描（强制脱敏） | 否 |
+| `scan_dependencies` | 依赖清单、lockfile、来源与 typosquat 启发式检查 | 否 |
+| `check_publish_readiness` | 版本四件、发布文件、仓库与 publishConfig 检查 | 否 |
+| `run_checks` | 白名单测试 / lint / compile 并返回结构化摘要 | 仅显式 allow_execute |
+| `scaffold_skill` | 生成最小技能脚手架，默认 dry-run | 仅显式 apply |
+| `workflow_state` | 读取 `.workflow`，可选显式追加日志 | 仅显式 apply |
 
 详细契约见 `references/tools.md`。
 
 ## 边界
 
-- 不执行被测项目代码，不自动修改文件，不自动提交。
+- `run_checks` 是唯一会执行项目代码的工具，默认关闭，必须显式 `allow_execute=true`；只运行白名单检查。
+- `scaffold_skill` / `workflow_state` 默认只预览，显式 `apply=true` 才写入；写入前做原子替换并保留 `.bak`。
 - 不联网，不查询包是否存在于公共仓库。
 - 不读取或修改 YottaCode 仓库。
 - 结论是确定性静态判断，不替代人工评审与最终决策。
 
 ## 当前版本
 
-- v0.1.0：协议内核 + 上述 6 个工具。
-- 后续批次：`scan_secrets` / `scan_dependencies` / `check_publish_readiness` /
-  `run_checks` / `scaffold_skill` / `workflow_state`。
+- v0.1.0：协议内核 + 上述 12 个工具。

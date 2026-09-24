@@ -14,8 +14,15 @@
 | `review_code` | 规则化代码评审，输出文件、行号、证据与建议。 |
 | `review_diff` | 只评审 unified diff 的新增行。 |
 | `mcp_doctor` | 只读检查技能目录与 MCP JSON 配置。 |
+| `scan_secrets` | 密钥 / 凭据 / 高熵令牌扫描，证据强制脱敏。 |
+| `scan_dependencies` | 依赖清单、lockfile、来源与 typosquat 启发式检查。 |
+| `check_publish_readiness` | 版本对齐、发布文件与包元数据检查。 |
+| `run_checks` | 运行白名单测试 / lint / compile，执行必须显式开启。 |
+| `scaffold_skill` | 规划或生成最小技能脚手架，默认 dry-run。 |
+| `workflow_state` | 读取 `.workflow`，可选显式追加快照日志。 |
 
-六个工具全部本地运行、确定性输出、只读；核心只用 Python 3.8+ 标准库，默认不联网。
+前九个工具只读；`run_checks` 必须显式 `allow_execute=true`，`scaffold_skill` /
+`workflow_state` 必须显式 `apply=true` 才写入。核心只用 Python 3.8+ 标准库，默认不联网。
 
 ## 安装
 
@@ -61,4 +68,4 @@ python scripts/dev_engine.py mcp-doctor
 
 ## 当前版本
 
-`0.1.0` 提供协议内核与六个只读工具；其余六个工具进入下一批。
+`0.1.0` 提供协议内核与十二个确定性工具。

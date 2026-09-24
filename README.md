@@ -14,9 +14,16 @@ Deterministic local development tools exposed over a stdio MCP server.
 | `review_code` | Apply deterministic review rules with file, line and evidence. |
 | `review_diff` | Review only added lines in a unified diff. |
 | `mcp_doctor` | Inspect installed skills and MCP JSON configuration files. |
+| `scan_secrets` | Scan for credentials and high-entropy tokens with redacted evidence. |
+| `scan_dependencies` | Check manifests, lockfiles, insecure sources and typosquat suspicion. |
+| `check_publish_readiness` | Check version alignment, release files and package metadata. |
+| `run_checks` | Run whitelisted tests, lint or compile checks; execution is explicit. |
+| `scaffold_skill` | Plan or create a minimal skill scaffold; dry-run by default. |
+| `workflow_state` | Read `.workflow` and optionally append an explicit log entry. |
 
-All six tools are local, deterministic and read-only. Python 3.8+ standard library
-is sufficient; no network access is required.
+The first nine tools are read-only; `run_checks` requires `allow_execute=true`, and
+`scaffold_skill` / `workflow_state` require `apply=true` before writing. Python 3.8+
+standard library is sufficient; no network access is required.
 
 ## Install
 
@@ -66,5 +73,4 @@ python scripts/dev_engine.py mcp-doctor
 
 ## Current version
 
-`0.1.0` ships the protocol core and six read-only tools. The remaining six tools are
-planned for the next batch.
+`0.1.0` ships the protocol core and twelve deterministic tools.

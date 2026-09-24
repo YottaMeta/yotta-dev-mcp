@@ -63,3 +63,49 @@ Input:
 - `config_paths` (optional array).
 
 Output: `skills`, `mcp_configs`, `issues`, `checked_skills`, `checked_configs`.
+
+## scan_secrets
+
+Input: `path` or `text`, optional `max_findings`, optional `include_git_history`
+(bounded, default false).
+
+Output: `findings` with `path`, `line`, `rule`, `severity`, redacted `evidence`,
+`suggestion`; `truncated`.
+
+## scan_dependencies
+
+Input: `path`.
+
+Output: `manifests`, `lockfiles`, `issues` (`missing-lockfile`,
+`unpinned-dependency`, `insecure-source`, `local-dependency`,
+`typosquat-suspicion`), and counts. Offline heuristics only.
+
+## check_publish_readiness
+
+Input: `path`.
+
+Output: `ok`, `files`, `versions` (package / skill / changelog / engine when
+present), `issues`.
+
+## run_checks
+
+Input: `kind` (`python-unittest` / `pytest` / `python-compile` / `npm-test` /
+`npm-lint`), `cwd`, optional `timeout`, explicit `allow_execute=true`.
+
+Output: `exit_code`, `passed`, bounded `summary`, compressed `output`,
+`timed_out`.
+
+## scaffold_skill
+
+Input: `name`, `output_dir`, optional `description`, explicit `apply=true`.
+
+Output: `target`, `files`, `applied`. Default is dry-run; existing non-empty
+targets are rejected.
+
+## workflow_state
+
+Input: `root`, `action` (`read` / `append-log` / `append-file`), optional
+`date`, `text`, `file`, explicit `apply=true`.
+
+Output: `ok`, `files`, `missing`, `excerpts` for read; `target`, `applied`,
+`preview` for writes. Writes are atomic and keep a `.bak` of an existing file.

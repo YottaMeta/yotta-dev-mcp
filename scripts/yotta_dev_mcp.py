@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""yotta-dev-mcp — deterministic development tools exposed over stdio MCP.
+
+Protocol support is dual-era:
+  * modern: MCP 2026-07-28, server/discover + per-request _meta
+  * legacy: initialize handshake with protocolVersion 2025-11-25
+
+The six tools in this first slice are local, deterministic and read-only:
+repo_map / find_code / compress_output / review_code / review_diff / mcp_doctor.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))
+
+import dev_engine as engine  # noqa: E402
+
+VERSION = engine.VERSION
+TOOL_NAME = "yotta-dev-mcp"
+MCP_PROTOCOL_MODERN = "2026-07-28"
+MCP_PROTOCOL_LEGACY = "2025-11-25"
+SERVER_INFO = {"name": TOOL_NAME, "version": VERSION}
+
+
+def _text_result(payload):
+    return {
+        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}],
+        "isError": False,
+    }
+
+
+def _tool_error(message):
+    return {
+        "content": [{"type": "text", "text": str(message)}],
+        "isError": True,
+    }
+
+
+def _tool(name, arguments):
+    try:
+        result = engine.dispatch(name, arguments)
+    except Exception as exc:  # noqa: BLE001
+        return _tool_error("%s 失败: %s" % (name, exc))
+    if name == "compress_output" and isinstance(result, dict):
+        return {
+            "content": [{"type": "text", "text": result.get("text", "")}],
+            "isError": False,
+        }
+    return _text_result(result)
+
+
+TOOL_HANDLERS = {
+    name: (lambda arguments, tool_name=name: _tool(tool_name, arguments))
+    for name in ("repo_map", "find_code", "compress_output",
+                 "review_code", "review_diff", "mcp_doctor")
+}
+
+
+def mcp_tools():
+    return [
+        {
+            "name": "repo_map",
+            "description": (
+                "Map a local repository's source modules, imports and entrypoints. "
+                "Use when starting work in an unfamiliar codebase or when you need a "
+                "small structural overview before editing."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Repository or source directory"},
+                    "max_files": {"type": "integer", "minimum": 1,
+                                  "description": "Maximum source files to inspect (default 2000)"},
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "find_code",
+            "description": (
+                "Find a symbol, definition or text in local source files with bounded "
+                "results. Use when locating where a function, class or string lives."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Repository, file or directory"},
+                    "query": {"type": "string", "description": "Symbol or text to find"},
+                    "extensions": {"type": "array", "items": {"type": "string"},
+                                   "description": "Optional file extensions such as .py or .ts"},
+                    "max_results": {"type": "integer", "minimum": 1,
+                                    "description": "Maximum matches (default 100)"},
+                    "context_lines": {"type": "integer", "minimum": 0, "maximum": 5,
+                                      "description": "Context lines around each match"},
+                },
+                "required": ["path", "query"],
+            },
+        },
+        {
+            "name": "compress_output",
+            "description": (
+                "Compress long logs or command output while preserving errors, "
+                "tracebacks, warnings, head and tail lines. Use before putting long "
+                "tool output into the context window."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to compress"},
+                    "file": {"type": "string", "description": "Read text from this file instead"},
+                    "max_chars": {"type": "integer", "minimum": 20,
+                                  "description": "Output character budget (default 4000)"},
+                    "head_lines": {"type": "integer", "minimum": 0},
+                    "tail_lines": {"type": "integer", "minimum": 0},
+                },
+            },
+        },
+        {
+            "name": "review_code",
+            "description": (
+                "Run deterministic local code review rules and return evidence with "
+                "file, line, rule, severity and suggestion. Use for a focused review "
+                "before commit or PR."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File or repository path"},
+                    "text": {"type": "string", "description": "Review this text instead"},
+                    "max_findings": {"type": "integer", "minimum": 1},
+                },
+            },
+        },
+        {
+            "name": "review_diff",
+            "description": (
+                "Review only added lines in a git diff or unified diff. Use when "
+                "reviewing a patch or before opening a pull request."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "diff_text": {"type": "string", "description": "Unified diff content"},
+                    "path": {"type": "string", "description": "Git repository path"},
+                    "base": {"type": "string", "description": "Optional git base revision"},
+                    "max_findings": {"type": "integer", "minimum": 1},
+                },
+            },
+        },
+        {
+            "name": "mcp_doctor",
+            "description": (
+                "Inspect installed skills and MCP JSON configuration files for "
+                "versions and obvious configuration issues. Read-only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "skills_dirs": {"type": "array", "items": {"type": "string"}},
+                    "config_paths": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    ]
+
+
+def _req_version(params):
+    meta = (params or {}).get("_meta") or {}
+    return meta.get("io.modelcontextprotocol/protocolVersion")
+
+
+def _modern_ok(payload, cache=None):
+    out = {"resultType": "complete"}
+    out.update(payload)
+    out["_meta"] = {"io.modelcontextprotocol/serverInfo": dict(SERVER_INFO)}
+    if cache:
+        out["ttlMs"] = cache[0]
+        out["cacheScope"] = cache[1]
+    return out
+
+
+def _unsupported_version(rid, protocol_version):
+    return {
+        "jsonrpc": "2.0",
+        "id": rid,
+        "error": {
+            "code": -32022,
+            "message": "Unsupported protocol version",
+            "data": {"supported": [MCP_PROTOCOL_MODERN], "requested": protocol_version},
+        },
+    }
+
+
+def handle_message(msg):
+    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+        rid = msg.get("id") if isinstance(msg, dict) else None
+        return {"jsonrpc": "2.0", "id": rid,
+                "error": {"code": -32600, "message": "invalid request"}}
+    method = msg.get("method")
+    rid = msg.get("id")
+    if rid is None or method is None:
+        return None
+    params = msg.get("params") or {}
+    protocol_version = _req_version(params)
+    if protocol_version is not None:
+        if protocol_version != MCP_PROTOCOL_MODERN:
+            return _unsupported_version(rid, protocol_version)
+        if method == "server/discover":
+            return {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": _modern_ok({
+                    "supportedVersions": [MCP_PROTOCOL_MODERN],
+                    "capabilities": {"tools": {}},
+                    "instructions": (
+                        "yotta-dev-mcp exposes deterministic local development tools. "
+                        "Prefer repo_map/find_code before editing, review_diff before PR, "
+                        "review_code for focused review, compress_output for long logs and "
+                        "mcp_doctor for local configuration checks. All six tools are offline "
+                        "and read-only."
+                    ),
+                }, (3600000, "public")),
+            }
+        if method == "tools/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": _modern_ok({"tools": mcp_tools()}, (300000, "public")),
+            }
+        if method == "tools/call":
+            name = params.get("name")
+            arguments = params.get("arguments") or {}
+            handler = TOOL_HANDLERS.get(name)
+            if not handler:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": rid,
+                    "result": _modern_ok(_tool_error("未知工具: %s" % name)),
+                }
+            return {"jsonrpc": "2.0", "id": rid, "result": _modern_ok(handler(arguments))}
+        if method == "initialize":
+            return {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "error": {
+                    "code": -32601,
+                    "message": "initialize removed in MCP 2026-07-28; use server/discover",
+                },
+            }
+        return {"jsonrpc": "2.0", "id": rid,
+                "error": {"code": -32601, "message": "Method not found: " + str(method)}}
+
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {
+                "protocolVersion": MCP_PROTOCOL_LEGACY,
+                "capabilities": {"tools": {}},
+                "serverInfo": SERVER_INFO,
+            },
+        }
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": rid, "result": {}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": mcp_tools()}}
+    if method == "tools/call":
+        name = params.get("name")
+        arguments = params.get("arguments") or {}
+        handler = TOOL_HANDLERS.get(name)
+        if not handler:
+            return {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": _tool_error("未知工具: %s" % name),
+            }
+        return {"jsonrpc": "2.0", "id": rid, "result": handler(arguments)}
+    return {"jsonrpc": "2.0", "id": rid,
+            "error": {"code": -32601, "message": "Method not found: " + str(method)}}
+
+
+def main():
+    try:
+        sys.stdin.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            response = {"jsonrpc": "2.0", "id": None,
+                        "error": {"code": -32700, "message": "parse error"}}
+        else:
+            response = handle_message(message)
+        if response is not None:
+            sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()

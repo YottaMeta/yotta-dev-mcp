@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "unit-tests",
+      "level": "L2",
+      "kind": "python-unittest",
+      "cwd": "scripts",
+      "timeout": 300,
+      "required": true,
+      "claim": "the yotta-dev-mcp unit and protocol suites pass"
+    }
+  ],
+  "manual": [
+    {
+      "id": "independent-review",
+      "claim": "an independent reviewer approves the change"
+    }
+  ]
+}

@@ -9,11 +9,18 @@
   无法判定的部分进 UNKNOWN，声明的不变量一律进 `unverified_claims`。
 - 新增 `impact_analysis`：从 changed_files / unified diff / 目标符号生成变更影响锥，
   含直接消费者、受影响层与边界、数据存储、不变量、映射测试、可解释风险分级与回滚探针。
+- 新增 `verify_change`：L0-L5 验证阶梯与确定性证据账本；L0 / L1 默认运行，
+  L2-L4 必须同时有 `.yotta/verification.json` 白名单声明与 `allow_execute=true`，
+  L5 人工复核始终留在 `unverified_claims`；账本以 output hash 与 ledger digest 复算。
+- 新增 `self_test`：检查必需文件、版本五件、协议工具 schema / engine dispatch 漂移、
+  写入与执行闸门是否 fail-closed，并用 seeded defect 与 mutation control 反证验证器会红。
 - 新增架构契约（版本 1）：分层、依赖规则、边界、数据归属、不变量、风险权重；
   校验输出 code / severity / JSON pointer / evidence。
+- 新增可选验证策略（版本 1）：只允许白名单 runner、仓库内相对 cwd 与显式执行；
+  拒绝任意命令、绝对路径与越界 cwd。
 - 结论只给 `PASS` / `FAIL` / `UNKNOWN`；缺证据项写入 `unknowns`，未执行的验证级别
   写入 `unverified_claims`；模型带稳定 `model_digest`。
-- 原 12 个工具行为不变；新增的三个工具只读、离线、零依赖。
+- 原 12 个工具行为不变；新增的五个工具离线、零依赖，默认只读。
 
 ## v0.1.1 (2026-09-25)
 

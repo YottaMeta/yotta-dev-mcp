@@ -12,6 +12,8 @@
 | `system_model` | 系统模型：模块、依赖、入口、测试映射、配置与数据归属，附带契约分层。 |
 | `architecture_review` | 按契约评审依赖规则、边界可见性与数据归属，逐条给出证据。 |
 | `impact_analysis` | 变更影响锥：消费者、受影响层与存储、映射测试、风险分级与回滚探针。 |
+| `verify_change` | L0-L5 验证阶梯与证据账本；未执行级别保留在 `unverified_claims`。 |
+| `self_test` | 文件、版本、工具契约、写闸门与 seeded defect / mutation 反证自测。 |
 | `find_code` | 符号与文本定位，结果有数量上限。 |
 | `compress_output` | 压缩长日志，保留错误、错误栈和首尾上下文。 |
 | `review_code` | 规则化代码评审，输出文件、行号、证据与建议。 |
@@ -24,8 +26,9 @@
 | `scaffold_skill` | 规划或生成最小技能脚手架，默认 dry-run。 |
 | `workflow_state` | 读取 `.workflow`，可选显式追加快照日志。 |
 
-十二个工具只读；`run_checks` 必须显式 `allow_execute=true`，`scaffold_skill` /
-`workflow_state` 必须显式 `apply=true` 才写入。核心只用 Python 3.8+ 标准库，默认不联网。
+默认只读；`run_checks`、`verify_change` 的 L2-L4 策略检查和 `self_test` 的测试子集
+必须显式 `allow_execute=true`，`scaffold_skill` / `workflow_state` 必须显式
+`apply=true` 才写入。核心只用 Python 3.8+ 标准库，默认不联网。
 
 ### 架构契约
 
@@ -41,6 +44,15 @@
 `impact_analysis` 从 `changed_files`、unified diff 或目标符号出发，沿反向依赖走出一棵
 有上限的影响锥：直接消费者、受影响层与边界、数据存储、不变量、映射测试、
 可解释的风险分级与回滚探针；全程不执行任何命令。
+
+`verify_change` 在改动后跑同一份模型：L0 检查语法与契约 schema，L1 检查影响锥内架构规则，
+L2-L4 只执行 `.yotta/verification.json` 中声明的白名单检查且必须显式 `allow_execute=true`，
+L5 独立复核始终保留在未验证项。账本中的每个结论都带 claim、status、evidence、check 与
+output hash，便于复算；未跑级别不会被写成“已通过”。
+
+`self_test` 对元开自身做完整性检查：必需文件、版本五件、协议工具 schema 与引擎
+dispatch 是否漂移、写 / 执行闸门是否仍 fail-closed，并用临时仓库里的 seeded defect
+与 mutation control 证明验证器会变红或变 UNKNOWN。测试子集默认不跑。
 
 ## 安装
 
@@ -76,6 +88,9 @@ python scripts/dev_engine.py repo-map .
 python scripts/dev_engine.py system-model .
 python scripts/dev_engine.py architecture-review .
 python scripts/dev_engine.py impact-analysis . --changed src/core/store.py
+python scripts/dev_engine.py verify-change . --changed src/core/store.py
+python scripts/dev_engine.py verify-change . --changed src/core/store.py --level L2 --allow-execute
+python scripts/dev_engine.py self-test .
 python scripts/dev_engine.py find-code . "helper"
 python scripts/dev_engine.py review-code .
 python scripts/dev_engine.py mcp-doctor
@@ -90,5 +105,6 @@ python scripts/dev_engine.py mcp-doctor
 ## 当前版本
 
 `0.2.0` 开发中：在原有十二个确定性工具之上新增 `system_model`、
-`architecture_review`、`impact_analysis` 与 `.yotta/architecture.json` 架构契约。
+`architecture_review`、`impact_analysis`、`verify_change`、`self_test`，以及
+`.yotta/architecture.json` 与可选 `.yotta/verification.json` 契约。
 发布前 npm 的 `latest` 仍为 `0.1.1`。

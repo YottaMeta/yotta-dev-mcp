@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import dev_contract
@@ -58,6 +59,23 @@ CONE_LIMIT = 500
 SYMBOL_MATCH_LIMIT = 20
 IMPORT_KINDS_DECISIVE = ("internal", "internal-file")
 BLAST_LEVELS = ((9, "critical"), (6, "high"), (3, "medium"))
+VERIFY_LEVELS = ("L0", "L1", "L2", "L3", "L4", "L5")
+VERIFY_EXEC_LEVELS = ("L2", "L3", "L4")
+VERIFY_DEFAULT_LEVELS = ("L0", "L1")
+VERIFY_REQUIRED_SOURCE_FILES = (
+    "SKILL.md", "package.json", "README.md", "README.zh-CN.md",
+    "CHANGELOG.md", "LICENSE", "NOTICE", "server.json", "install.sh",
+    "bin/yotta-dev-mcp.js", "bin/install.js",
+    "scripts/dev_engine.py", "scripts/yotta_dev_mcp.py",
+    "references/tools.md", "assets/banner.png",
+)
+VERIFY_REQUIRED_INSTALLED_FILES = ("SKILL.md", "assets/banner.png")
+VERIFY_WRITE_GATES = (
+    ("run_checks", "allow_execute"),
+    ("scaffold_skill", "apply"),
+    ("workflow_state", "apply"),
+    ("verify_change", "allow_execute"),
+)
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 ERROR_RE = re.compile(
@@ -2289,12 +2307,972 @@ def impact_analysis(path, changed_files=None, diff=None, symbols=None, depth=3,
     }
 
 
+def _is_within(root, target):
+    try:
+        Path(target).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _ledger_entry(check_id, level, claim, status, severity="info", evidence=None,
+                  next_step=None, command=None, confidence="high"):
+    return {
+        "id": check_id,
+        "level": level,
+        "claim": claim,
+        "status": status,
+        "severity": severity,
+        "check": "verify_change",
+        "confidence": confidence,
+        "evidence": sorted(
+            list(evidence or []),
+            key=lambda item: (item.get("path") or "", item.get("line") or 0,
+                              item.get("detail") or ""),
+        ),
+        "next_step": next_step,
+        "command": command,
+    }
+
+
+def _verify_contract_result(contract_result):
+    if not contract_result["present"]:
+        return "UNKNOWN", [{
+            "path": contract_result["path"],
+            "line": None,
+            "detail": "architecture contract is missing",
+        }], "add .yotta/architecture.json"
+    if not contract_result["ok"]:
+        evidence = []
+        for item in contract_result["findings"]:
+            if item["severity"] in dev_contract.BLOCKING_SEVERITIES:
+                evidence.append({
+                    "path": item["path"],
+                    "line": None,
+                    "detail": "%s: %s" % (item["code"], item["message"]),
+                })
+        return "FAIL", evidence, "fix the contract findings and rerun verify_change"
+    return "PASS", [], None
+
+
+def _verify_syntax(changed, root):
+    evidence = []
+    unknown = []
+    for item in changed:
+        rel = item["path"]
+        if item.get("change") == "deleted":
+            continue
+        target = root / rel
+        if not target.is_file():
+            continue
+        suffix = target.suffix.lower()
+        if suffix not in (".py", ".json") and suffix not in JS_EXTS:
+            continue
+        if suffix in JS_EXTS:
+            unknown.append({
+                "path": rel,
+                "line": None,
+                "detail": "no zero-dependency JavaScript parser is available at L0",
+            })
+            continue
+        try:
+            text = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            unknown.append({
+                "path": rel,
+                "line": None,
+                "detail": "file could not be read: %s" % exc,
+            })
+            continue
+        try:
+            if suffix == ".py":
+                ast.parse(text, filename=rel)
+            else:
+                json.loads(text)
+        except SyntaxError as exc:
+            evidence.append({
+                "path": rel,
+                "line": exc.lineno,
+                "detail": "syntax error: %s" % exc.msg,
+            })
+        except json.JSONDecodeError as exc:
+            evidence.append({
+                "path": rel,
+                "line": exc.lineno,
+                "detail": "JSON error: %s" % exc.msg,
+            })
+    if evidence:
+        return "FAIL", evidence, "fix the syntax error(s) and rerun verify_change", []
+    if unknown:
+        return "UNKNOWN", unknown, "use an L2-L4 adapter or a language-specific parser", unknown
+    return "PASS", [], None, []
+
+
+def _verify_architecture(impact):
+    architecture = impact["architecture"]
+    blocking = [
+        item for item in architecture["violations_in_scope"]
+        if item["severity"] in dev_contract.BLOCKING_SEVERITIES
+    ]
+    if blocking:
+        evidence = []
+        for item in blocking:
+            for entry in item["evidence"]:
+                evidence.append({
+                    "path": entry["path"],
+                    "line": entry.get("line"),
+                    "detail": "%s (%s): %s" % (
+                        item["rule"], item["code"], entry.get("detail") or "",
+                    ),
+                })
+        return "FAIL", evidence, "fix the in-scope architecture violation(s)"
+    scoped = {item["path"] for item in impact["cone"]["nodes"]}
+    always_relevant = {
+        "contract-missing", "contract-invalid", "model-truncated", "cone-truncated",
+        "change-not-found", "symbol-not-found",
+    }
+    unknowns = []
+    for item in list(architecture.get("unknowns") or []) + list(impact.get("unknowns") or []):
+        kind = item.get("kind")
+        identifier = str(item.get("id") or "")
+        if kind in always_relevant or not identifier:
+            unknowns.append(item)
+        elif identifier in scoped:
+            unknowns.append(item)
+        elif any(path and path in identifier for path in scoped):
+            unknowns.append(item)
+    if unknowns:
+        evidence = [{
+            "path": item.get("id") or item.get("path") or "",
+            "line": None,
+            "detail": "%s: %s" % (item.get("kind"), item.get("detail") or ""),
+        } for item in unknowns]
+        return "UNKNOWN", evidence, "resolve the unknown evidence and rerun verify_change"
+    return "PASS", [], None
+
+
+def _verify_policy_entries(root, policy, execution_levels, allow_execute, timeout):
+    ledger = []
+    unverified = []
+    for level in execution_levels:
+        checks = [item for item in policy["checks"] if item["level"] == level]
+        if not checks:
+            ledger.append(_ledger_entry(
+                "%s-policy" % level, level,
+                "%s verification is declared" % level,
+                "UNKNOWN", severity="high",
+                evidence=[{"path": policy["path"], "line": None,
+                           "detail": "no %s checks are declared" % level}],
+                next_step="declare a whitelisted %s check in .yotta/verification.json" % level,
+            ))
+            unverified.append({
+                "level": level,
+                "claim": "%s verification is declared and executed" % level,
+                "status": "UNVERIFIED",
+                "reason": "verification-level-not-declared",
+                "required": True,
+                "next_step": "declare a whitelisted check in .yotta/verification.json",
+            })
+            continue
+        for check in checks:
+            check_id = "%s-%s" % (level, check["id"])
+            claim = check["claim"] or "%s check %s passes" % (level, check["id"])
+            if not allow_execute:
+                ledger.append(_ledger_entry(
+                    check_id, level, claim, "UNVERIFIED",
+                    severity="high" if check["required"] else "medium",
+                    next_step="rerun with allow_execute=true",
+                ))
+                unverified.append({
+                    "level": level,
+                    "claim": claim,
+                    "status": "UNVERIFIED",
+                    "reason": "allow_execute=false",
+                    "required": check["required"],
+                    "next_step": "rerun with allow_execute=true",
+                })
+                continue
+            cwd = (root / check["cwd"]).resolve()
+            if not _is_within(root, cwd) or not cwd.is_dir():
+                ledger.append(_ledger_entry(
+                    check_id, level, claim, "FAIL", severity="high",
+                    evidence=[{"path": check["cwd"], "line": None,
+                               "detail": "check cwd is not a directory inside the repository"}],
+                    next_step="fix the policy cwd and rerun verify_change",
+                ))
+                continue
+            try:
+                result = run_checks(
+                    check["kind"], str(cwd),
+                    timeout=min(timeout, check["timeout"]),
+                    allow_execute=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                ledger.append(_ledger_entry(
+                    check_id, level, claim, "FAIL", severity="high",
+                    evidence=[{"path": check["cwd"], "line": None,
+                               "detail": "check could not run: %s" % exc}],
+                    next_step="fix the verification policy or local toolchain",
+                ))
+                continue
+            output = result.get("output") or ""
+            command = {
+                "kind": result["kind"],
+                "cwd": check["cwd"],
+                "exit_code": result["exit_code"],
+                "output_hash": hashlib.sha256(output.encode("utf-8")).hexdigest(),
+                "summary": result.get("summary") or "",
+                "timed_out": bool(result.get("timed_out")),
+            }
+            status = "PASS" if result.get("passed") else "FAIL"
+            ledger.append(_ledger_entry(
+                check_id, level, claim, status,
+                severity="high" if check["required"] else "medium",
+                evidence=[{"path": check["cwd"], "line": None,
+                           "detail": result.get("summary") or "check finished"}],
+                next_step=None if status == "PASS"
+                          else "inspect the check output and fix the failure",
+                command=command,
+            ))
+    return sorted(ledger, key=lambda item: (item["level"], item["id"])), unverified
+
+
+def verify_change(path, changed_files=None, diff=None, symbols=None, depth=3,
+                  levels=None, allow_execute=False, timeout=120,
+                  max_files=2000, contract_file=None, policy_file=None):
+    """Run the L0-L5 verification ladder and return a deterministic evidence ledger.
+
+    L0/L1 always run in-process. L2-L4 run only when both a whitelisted
+    .yotta/verification.json check is declared and allow_execute is true.
+    L5 is always recorded as manual work and is never auto-verified.
+    """
+    root = Path(path)
+    if not root.exists():
+        raise ValueError("路径不存在: %s" % path)
+    if not root.is_dir():
+        raise ValueError("verify_change 需要目录: %s" % path)
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 600:
+        raise ValueError("timeout 必须是 1 到 600 之间的整数")
+    requested = list(levels or [])
+    for level in requested:
+        if level not in VERIFY_LEVELS:
+            raise ValueError("level 必须是 L0-L5 之一: %s" % level)
+    execution_levels = [level for level in VERIFY_EXEC_LEVELS if level in requested]
+
+    impact = impact_analysis(
+        str(root), changed_files=changed_files, diff=diff, symbols=symbols,
+        depth=depth, max_files=max_files, contract_file=contract_file,
+    )
+    contract_result = dev_contract.load_contract(root, contract_file=contract_file)
+    policy = dev_contract.load_verification_policy(root, policy_file=policy_file)
+
+    ledger = []
+    unverified = []
+
+    contract_status, contract_evidence, contract_next = _verify_contract_result(contract_result)
+    ledger.append(_ledger_entry(
+        "L0-contract", "L0", "the architecture contract is valid",
+        contract_status, severity="high",
+        evidence=contract_evidence, next_step=contract_next,
+    ))
+
+    syntax_status, syntax_evidence, syntax_next, syntax_unknown = _verify_syntax(
+        impact["changed"], root
+    )
+    ledger.append(_ledger_entry(
+        "L0-syntax", "L0", "changed source files parse",
+        syntax_status, severity="high",
+        evidence=syntax_evidence, next_step=syntax_next,
+    ))
+    if syntax_unknown:
+        unverified.append({
+            "level": "L0",
+            "claim": "changed JavaScript or TypeScript files parse",
+            "status": "UNVERIFIED",
+            "reason": "no zero-dependency JavaScript parser",
+            "required": False,
+            "next_step": "add a language adapter or run an explicit parser check",
+        })
+
+    architecture_status, architecture_evidence, architecture_next = _verify_architecture(impact)
+    advisory = [
+        item for item in impact["architecture"]["violations_in_scope"]
+        if item["severity"] not in dev_contract.BLOCKING_SEVERITIES
+    ]
+    if architecture_status == "PASS" and advisory:
+        architecture_evidence = [{
+            "path": entry["path"],
+            "line": entry.get("line"),
+            "detail": "%s (%s): %s" % (
+                item["rule"], item["code"], entry.get("detail") or "",
+            ),
+        } for item in advisory for entry in item["evidence"]]
+    ledger.append(_ledger_entry(
+        "L1-architecture", "L1", "in-scope architecture rules and boundaries hold",
+        architecture_status, severity="high",
+        evidence=architecture_evidence, next_step=architecture_next,
+    ))
+
+    for invariant in impact["affected_invariants"]:
+        unverified.append({
+            "level": "L1",
+            "claim": invariant["claim"],
+            "status": "UNVERIFIED",
+            "reason": "invariant requires a static, command or manual check",
+            "required": False,
+            "next_step": "add a verification policy check or complete the manual review",
+        })
+
+    if execution_levels:
+        if not policy["present"]:
+            for level in execution_levels:
+                ledger.append(_ledger_entry(
+                    "%s-policy" % level, level,
+                    "%s verification policy is present" % level,
+                    "UNKNOWN", severity="high",
+                    evidence=[{"path": policy["path"], "line": None,
+                               "detail": "verification policy is missing"}],
+                    next_step="add .yotta/verification.json with whitelisted checks",
+                ))
+                unverified.append({
+                    "level": level,
+                    "claim": "%s verification is declared and executed" % level,
+                    "status": "UNVERIFIED",
+                    "reason": "verification-policy-missing",
+                    "required": True,
+                    "next_step": "add .yotta/verification.json",
+                })
+        elif not policy["ok"]:
+            evidence = [{
+                "path": item["path"],
+                "line": None,
+                "detail": "%s: %s" % (item["code"], item["message"]),
+            } for item in policy["findings"]
+                if item["severity"] in dev_contract.BLOCKING_SEVERITIES]
+            for level in execution_levels:
+                ledger.append(_ledger_entry(
+                    "%s-policy" % level, level,
+                    "%s verification policy is valid" % level,
+                    "FAIL", severity="high", evidence=evidence,
+                    next_step="fix .yotta/verification.json and rerun verify_change",
+                ))
+        else:
+            execution_ledger, execution_unverified = _verify_policy_entries(
+                root, policy, execution_levels, allow_execute, timeout,
+            )
+            ledger.extend(execution_ledger)
+            unverified.extend(execution_unverified)
+
+    verified_levels = {
+        item["level"] for item in ledger
+        if item["status"] in ("PASS", "FAIL")
+    }
+    for level in VERIFY_EXEC_LEVELS:
+        if level not in verified_levels and not any(
+            item["level"] == level for item in unverified
+        ):
+            unverified.append({
+                "level": level,
+                "claim": "%s verification level is covered by evidence" % level,
+                "status": "UNVERIFIED",
+                "reason": "level-not-requested",
+                "required": False,
+                "next_step": "request this level and provide a verification policy",
+            })
+    if "L5" not in requested:
+        unverified.append({
+            "level": "L5",
+            "claim": "independent review or manual architecture approval",
+            "status": "UNVERIFIED",
+            "reason": "manual verification required",
+            "required": False,
+            "next_step": "complete an independent review or manual architecture decision",
+        })
+    else:
+        unverified.append({
+            "level": "L5",
+            "claim": "independent review or manual architecture approval",
+            "status": "UNVERIFIED",
+            "reason": "manual verification required",
+            "required": True,
+            "next_step": "complete an independent review or manual architecture decision",
+        })
+
+    unverified.sort(key=lambda item: (item["level"], item["claim"], item["reason"]))
+    ledger.sort(key=lambda item: (item["level"], item["id"]))
+    failed = any(item["status"] == "FAIL" for item in ledger)
+    unknown = any(item["status"] == "UNKNOWN" for item in ledger) or any(
+        item["required"] for item in unverified
+    )
+    if failed:
+        status = "FAIL"
+    elif unknown:
+        status = "UNKNOWN"
+    else:
+        status = "PASS"
+    required_levels = ["L0", "L1"]
+    for item in ledger:
+        if item["level"] in VERIFY_EXEC_LEVELS and item["status"] in ("PASS", "FAIL"):
+            required_levels.append(item["level"])
+    required_levels = sorted(set(required_levels), key=lambda item: int(item[1:]))
+    evidence = []
+    for item in ledger:
+        evidence.extend(item["evidence"])
+    if len(evidence) > EVIDENCE_LIMIT:
+        evidence = evidence[:EVIDENCE_LIMIT]
+    ledger_digest = hashlib.sha256(
+        json.dumps(ledger, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "status": status,
+        "root": str(root.resolve()),
+        "inputs": {
+            "changed_files": list(changed_files or []),
+            "symbols": list(symbols or []),
+            "diff_provided": bool(str(diff or "").strip()),
+            "levels": requested,
+            "allow_execute": bool(allow_execute),
+            "depth": depth,
+        },
+        "required_levels": required_levels,
+        "ledger": ledger,
+        "unverified_claims": unverified,
+        "policy": policy,
+        "evidence": evidence,
+        "ledger_digest": ledger_digest,
+        "model_digest": impact["model_digest"],
+        "impact_status": impact["status"],
+    }
+
+
+def _function_default(source_text, function_name, parameter_name):
+    try:
+        tree = ast.parse(source_text)
+    except SyntaxError:
+        return False, None
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != function_name:
+            continue
+        positional = list(node.args.args)
+        defaults = list(node.args.defaults)
+        offset = len(positional) - len(defaults)
+        for index, argument in enumerate(positional):
+            if argument.arg != parameter_name or index < offset:
+                continue
+            try:
+                return True, ast.literal_eval(defaults[index - offset])
+            except (ValueError, SyntaxError):
+                return True, "<non-literal>"
+    return False, None
+
+
+def _string_constant(node):
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def _protocol_tool_contracts(source_text):
+    tree = ast.parse(source_text)
+    function = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "mcp_tools":
+            function = node
+            break
+    if function is None:
+        raise ValueError("mcp_tools() not found")
+    list_node = None
+    for node in ast.walk(function):
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.List):
+            list_node = node.value
+            break
+    if list_node is None:
+        raise ValueError("mcp_tools() does not return a literal tool list")
+    contracts = []
+    for element in list_node.elts:
+        if not isinstance(element, ast.Dict):
+            raise ValueError("mcp_tools() contains a non-literal tool entry")
+        values = {}
+        for key, value in zip(element.keys, element.values):
+            if _string_constant(key):
+                values[key.value] = value
+        name_node = values.get("name")
+        if name_node is None:
+            raise ValueError("tool entry is missing name")
+        try:
+            name = ast.literal_eval(name_node)
+        except (ValueError, SyntaxError):
+            raise ValueError("tool name is not a literal string")
+        schema = values.get("inputSchema")
+        additional = False
+        if isinstance(schema, ast.Dict):
+            for key, value in zip(schema.keys, schema.values):
+                if _string_constant(key) and key.value == "additionalProperties":
+                    try:
+                        additional = ast.literal_eval(value) is False
+                    except (ValueError, SyntaxError):
+                        additional = False
+        contracts.append({"name": name, "additional_properties": additional})
+    return contracts
+
+
+def _dispatch_tool_names(source_text):
+    tree = ast.parse(source_text)
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != "dispatch":
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Assign):
+                continue
+            if not any(isinstance(target, ast.Name) and target.id == "handlers"
+                       for target in child.targets):
+                continue
+            if not isinstance(child.value, ast.Dict):
+                continue
+            names = []
+            for key in child.value.keys:
+                if _string_constant(key):
+                    names.append(key.value)
+                else:
+                    try:
+                        names.append(ast.literal_eval(key))
+                    except (ValueError, SyntaxError):
+                        pass
+            return sorted(names)
+    raise ValueError("dispatch() handler map not found")
+
+
+def _self_test_counterexamples():
+    probes = []
+
+    def record(kind, name, expectation, observed, passed, detail):
+        probes.append({
+            "kind": kind,
+            "name": name,
+            "expectation": expectation,
+            "observed": observed,
+            "passed": bool(passed),
+            "detail": detail,
+        })
+
+    with tempfile.TemporaryDirectory(prefix="yotta-dev-mcp-selftest-") as tmp:
+        root = Path(tmp)
+
+        def write(rel, text):
+            target = root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+
+        contract = {
+            "version": 1,
+            "layers": [
+                {"id": "core", "paths": ["core/**"]},
+                {"id": "ui", "paths": ["ui/**"]},
+            ],
+            "rules": [{
+                "id": "core-no-ui",
+                "type": "forbid-dependency",
+                "from": "core",
+                "to": "ui",
+                "severity": "high",
+                "claim": "core must not import ui",
+            }],
+        }
+        write(".yotta/architecture.json", json.dumps(contract))
+        write("core/leak.py", "from ui.view import VALUE\n")
+        write("ui/view.py", "VALUE = 1\n")
+
+        try:
+            observed = architecture_review(str(root))["status"]
+            detail = "seeded core -> ui dependency was reviewed"
+        except Exception as exc:  # noqa: BLE001
+            observed = "error"
+            detail = str(exc)
+        record("seeded-defect", "forbidden dependency", "FAIL", observed,
+               observed == "FAIL", detail)
+
+        contract["rules"] = []
+        write(".yotta/architecture.json", json.dumps(contract))
+        try:
+            observed = architecture_review(str(root))["status"]
+            detail = "same defect with the rule removed"
+        except Exception as exc:  # noqa: BLE001
+            observed = "error"
+            detail = str(exc)
+        record("mutation-control", "remove the rule", "not FAIL", observed,
+               observed != "FAIL", detail)
+
+        contract["version"] = 3
+        write(".yotta/architecture.json", json.dumps(contract))
+        try:
+            observed = architecture_review(str(root))["status"]
+            detail = "unsupported contract version"
+        except Exception as exc:  # noqa: BLE001
+            observed = "error"
+            detail = str(exc)
+        record("invalid-contract", "unsupported version", "FAIL or UNKNOWN",
+               observed, observed in ("FAIL", "UNKNOWN"), detail)
+
+        (root / ".yotta" / "architecture.json").unlink()
+        try:
+            observed = architecture_review(str(root))["status"]
+            detail = "missing contract"
+        except Exception as exc:  # noqa: BLE001
+            observed = "error"
+            detail = str(exc)
+        record("missing-contract", "no architecture contract", "UNKNOWN",
+               observed, observed == "UNKNOWN", detail)
+
+        write("secret.env", "TOKEN=abcdefghijklmnopqrstuvwxyz123456\n")
+        try:
+            observed = len(scan_secrets(str(root))["findings"])
+            passed = observed >= 1
+            detail = "seeded token was scanned"
+        except Exception as exc:  # noqa: BLE001
+            observed = "error"
+            passed = False
+            detail = str(exc)
+        record("secret-scan", "seeded credential", "at least one finding",
+               observed, passed, detail)
+
+        write("package.json", json.dumps({"name": "probe", "version": "1.0.0"}))
+        write("SKILL.md", "---\nname: probe\nversion: 2.0.0\n---\n")
+        write("README.md", "# probe\n")
+        write("LICENSE", "MIT\n")
+        write("CHANGELOG.md", "## v1.0.0\n")
+        try:
+            readiness = check_publish_readiness(str(root))
+            codes = {item["code"] for item in readiness["issues"]}
+            observed = "FAIL" if not readiness["ok"] else "PASS"
+            passed = not readiness["ok"] and "version-mismatch" in codes
+            detail = "seeded package/SKILL version mismatch"
+        except Exception as exc:  # noqa: BLE001
+            observed = "error"
+            passed = False
+            detail = str(exc)
+        record("publish-check", "seeded version mismatch", "FAIL",
+               observed, passed, detail)
+    return probes
+
+
+def _self_test_version_check(root, mode):
+    if mode == "installed":
+        skill = root / "SKILL.md"
+        version = _frontmatter_version(_read_text(skill)) if skill.is_file() else None
+        if not version:
+            return "FAIL", [{"code": "missing-version", "path": "SKILL.md",
+                             "detail": "SKILL.md has no version field"}], \
+                "restore a valid SKILL.md version"
+        return "PASS", [], None
+
+    versions = {}
+    try:
+        package = json.loads(_read_text(root / "package.json"))
+        versions["package.json"] = package.get("version")
+    except Exception as exc:  # noqa: BLE001
+        return "FAIL", [{"code": "invalid-package-json", "path": "package.json",
+                         "detail": str(exc)}], "fix package.json"
+    for rel in ("SKILL.md", "CHANGELOG.md", "server.json"):
+        target = root / rel
+        if not target.is_file():
+            versions[rel] = None
+            continue
+        if rel == "server.json":
+            try:
+                versions[rel] = json.loads(_read_text(target)).get("version")
+            except Exception:  # noqa: BLE001
+                versions[rel] = None
+        elif rel == "CHANGELOG.md":
+            match = re.search(r"(?m)^##\s+v?(\d+\.\d+\.\d+)", _read_text(target))
+            versions[rel] = match.group(1) if match else None
+        else:
+            versions[rel] = _frontmatter_version(_read_text(target))
+    engine_path = root / "scripts" / "dev_engine.py"
+    if engine_path.is_file():
+        match = re.search(r'(?m)^VERSION\s*=\s*["\']([^"\']+)["\']',
+                          _read_text(engine_path))
+        versions["engine"] = match.group(1) if match else None
+    else:
+        versions["engine"] = None
+    missing = sorted(key for key, value in versions.items() if not value)
+    if missing:
+        return "FAIL", [{
+            "code": "missing-version", "path": missing[0],
+            "detail": "version is missing from: %s" % ", ".join(missing),
+        }], "restore version alignment"
+    values = {value for value in versions.values() if value}
+    if len(values) != 1:
+        return "FAIL", [{
+            "code": "version-mismatch", "path": "package.json",
+            "detail": json.dumps(versions, ensure_ascii=False, sort_keys=True),
+        }], "align package, SKILL, CHANGELOG, server and engine versions"
+    return "PASS", [], None
+
+
+def _self_test_tool_contracts(root):
+    protocol_path = root / "scripts" / "yotta_dev_mcp.py"
+    engine_path = root / "scripts" / "dev_engine.py"
+    if not protocol_path.is_file() or not engine_path.is_file():
+        return "FAIL", [{
+            "code": "missing-protocol-source", "path": "scripts",
+            "detail": "protocol or engine source is missing",
+        }], "restore the protocol and engine sources"
+    try:
+        contracts = _protocol_tool_contracts(_read_text(protocol_path))
+        dispatch_names = _dispatch_tool_names(_read_text(engine_path))
+    except (OSError, ValueError, SyntaxError) as exc:
+        return "FAIL", [{
+            "code": "tool-contract-parse-error", "path": "scripts",
+            "detail": str(exc),
+        }], "fix the protocol or engine source"
+    protocol_names = [item["name"] for item in contracts]
+    evidence = []
+    if len(protocol_names) != len(set(protocol_names)):
+        evidence.append({"code": "tool-name-duplicate", "path": "scripts/yotta_dev_mcp.py",
+                         "detail": "duplicate tool names in mcp_tools()"})
+    if set(protocol_names) != set(dispatch_names):
+        evidence.append({
+            "code": "tool-name-drift", "path": "scripts/yotta_dev_mcp.py",
+            "detail": "protocol=%s dispatch=%s" % (
+                ",".join(sorted(protocol_names)), ",".join(sorted(dispatch_names)),
+            ),
+        })
+    drifted_schema = sorted(
+        item["name"] for item in contracts if not item["additional_properties"]
+    )
+    if drifted_schema:
+        evidence.append({
+            "code": "tool-schema-drift", "path": "scripts/yotta_dev_mcp.py",
+            "detail": "inputSchema.additionalProperties is not false for: %s"
+                      % ", ".join(drifted_schema),
+        })
+    if evidence:
+        return "FAIL", evidence, "align the protocol schemas with the engine handlers"
+    return "PASS", [], None
+
+
+def _self_test_write_gates(root):
+    engine_path = root / "scripts" / "dev_engine.py"
+    if not engine_path.is_file():
+        return "FAIL", [{"code": "missing-engine-source", "path": "scripts/dev_engine.py",
+                         "detail": "engine source is missing"}], "restore the engine source"
+    text = _read_text(engine_path)
+    evidence = []
+    for function_name, parameter in VERIFY_WRITE_GATES:
+        found, value = _function_default(text, function_name, parameter)
+        if not found:
+            evidence.append({
+                "code": "write-gate-missing",
+                "path": "scripts/dev_engine.py",
+                "detail": "%s(%s=...) was not found" % (function_name, parameter),
+            })
+        elif value is not False:
+            evidence.append({
+                "code": "write-gate-drift",
+                "path": "scripts/dev_engine.py",
+                "detail": "%s.%s default is %r, expected False"
+                          % (function_name, parameter, value),
+            })
+    if evidence:
+        return "FAIL", evidence, "restore fail-closed defaults for write and execute gates"
+    return "PASS", [], None
+
+
+def _self_test_detect_test_kind(root):
+    package_path = root / "package.json"
+    if package_path.is_file():
+        try:
+            package = json.loads(_read_text(package_path))
+            scripts = package.get("scripts") or {}
+            if isinstance(scripts, dict) and scripts.get("test"):
+                return "npm-test"
+        except Exception:  # noqa: BLE001
+            pass
+    if list(root.glob("test*.py")) or list(root.glob("tests/test*.py")):
+        return "python-unittest"
+    return None
+
+
+def self_test(path, mode="auto", allow_execute=False, timeout=120):
+    """Run deterministic integrity and counterexample checks on yotta-dev-mcp itself."""
+    root = Path(path)
+    if not root.exists():
+        raise ValueError("路径不存在: %s" % path)
+    if not root.is_dir():
+        raise ValueError("self_test 需要目录: %s" % path)
+    if mode not in ("auto", "source", "installed"):
+        raise ValueError("mode 必须是 auto、source 或 installed")
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 600:
+        raise ValueError("timeout 必须是 1 到 600 之间的整数")
+    if mode == "auto":
+        if ((root / "package.json").is_file()
+                or (root / "scripts" / "yotta_dev_mcp.py").is_file()):
+            mode = "source"
+        elif (root / "SKILL.md").is_file():
+            mode = "installed"
+        else:
+            mode = "source"
+
+    required = (VERIFY_REQUIRED_SOURCE_FILES if mode == "source"
+                else VERIFY_REQUIRED_INSTALLED_FILES)
+    missing = [rel for rel in required if not (root / rel).is_file()]
+    files_check = {
+        "id": "files",
+        "status": "FAIL" if missing else "PASS",
+        "severity": "high",
+        "claim": "required %s files are present" % mode,
+        "evidence": [{
+            "code": "missing-file", "path": rel,
+            "detail": "required file is missing",
+        } for rel in missing],
+        "next_step": "restore the missing files" if missing else None,
+    }
+
+    version_status, version_evidence, version_next = _self_test_version_check(root, mode)
+    version_check = {
+        "id": "versions" if mode == "source" else "skill-version",
+        "status": version_status,
+        "severity": "high",
+        "claim": ("package, SKILL, CHANGELOG, server and engine versions align"
+                  if mode == "source" else "SKILL.md declares a version"),
+        "evidence": version_evidence,
+        "next_step": version_next,
+    }
+
+    checks = [files_check, version_check]
+    unverified = []
+    if mode == "source":
+        tool_status, tool_evidence, tool_next = _self_test_tool_contracts(root)
+        checks.append({
+            "id": "tool-contracts",
+            "status": tool_status,
+            "severity": "high",
+            "claim": "protocol tool schemas match the engine dispatch handlers",
+            "evidence": tool_evidence,
+            "next_step": tool_next,
+        })
+        gate_status, gate_evidence, gate_next = _self_test_write_gates(root)
+        checks.append({
+            "id": "write-gates",
+            "status": gate_status,
+            "severity": "high",
+            "claim": "write and execute gates default to fail-closed",
+            "evidence": gate_evidence,
+            "next_step": gate_next,
+        })
+    else:
+        unverified.extend([
+            {"level": "L0", "claim": "protocol tool schemas match engine handlers",
+             "status": "UNVERIFIED", "reason": "installed mode has no protocol source",
+             "required": False, "next_step": "run self_test on the source checkout"},
+            {"level": "L0", "claim": "write and execute gates default to fail-closed",
+             "status": "UNVERIFIED", "reason": "installed mode has no engine source",
+             "required": False, "next_step": "run self_test on the source checkout"},
+        ])
+
+    probes = _self_test_counterexamples()
+    probe_failed = [item for item in probes if not item["passed"]]
+    checks.append({
+        "id": "verifier-counterexamples",
+        "status": "FAIL" if probe_failed else "PASS",
+        "severity": "high",
+        "claim": "seeded defects and mutation controls turn the verifier red or unknown",
+        "evidence": probes,
+        "next_step": "fix the verifier so every counterexample is detected"
+                     if probe_failed else None,
+    })
+
+    if allow_execute:
+        kind = _self_test_detect_test_kind(root)
+        if kind is None:
+            checks.append({
+                "id": "tests",
+                "status": "UNKNOWN",
+                "severity": "medium",
+                "claim": "the project test suite passes",
+                "evidence": [{"code": "test-runner-missing", "path": ".",
+                              "detail": "no whitelisted test runner was detected"}],
+                "next_step": "declare a test script or add test_*.py files",
+            })
+        else:
+            try:
+                result = run_checks(kind, str(root), timeout=timeout,
+                                    allow_execute=True)
+                output = result.get("output") or ""
+                checks.append({
+                    "id": "tests",
+                    "status": "PASS" if result.get("passed") else "FAIL",
+                    "severity": "high",
+                    "claim": "the project test suite passes",
+                    "evidence": [{"code": "test-run", "path": ".",
+                                  "detail": result.get("summary") or "test run finished"}],
+                    "next_step": None if result.get("passed")
+                                else "fix the failing tests and rerun self_test",
+                    "command": {
+                        "kind": kind,
+                        "cwd": ".",
+                        "exit_code": result.get("exit_code"),
+                        "output_hash": hashlib.sha256(
+                            output.encode("utf-8")
+                        ).hexdigest(),
+                        "timed_out": bool(result.get("timed_out")),
+                    },
+                })
+            except Exception as exc:  # noqa: BLE001
+                checks.append({
+                    "id": "tests",
+                    "status": "FAIL",
+                    "severity": "high",
+                    "claim": "the project test suite passes",
+                    "evidence": [{"code": "test-run-error", "path": ".",
+                                  "detail": str(exc)}],
+                    "next_step": "fix the local test runner",
+                })
+    else:
+        unverified.append({
+            "level": "L2",
+            "claim": "the project test suite passes",
+            "status": "UNVERIFIED",
+            "reason": "allow_execute=false",
+            "required": False,
+            "next_step": "rerun self_test with allow_execute=true",
+        })
+
+    failed = any(item["status"] == "FAIL" for item in checks)
+    unknown = any(item["status"] == "UNKNOWN" for item in checks)
+    if failed:
+        status = "FAIL"
+    elif unknown:
+        status = "UNKNOWN"
+    else:
+        status = "PASS"
+    counts = {
+        "passed": sum(1 for item in checks if item["status"] == "PASS"),
+        "failed": sum(1 for item in checks if item["status"] == "FAIL"),
+        "unknown": sum(1 for item in checks if item["status"] == "UNKNOWN"),
+        "unverified": len(unverified),
+    }
+    evidence = []
+    for item in checks:
+        evidence.extend(item.get("evidence") or [])
+    return {
+        "status": status,
+        "root": str(root.resolve()),
+        "mode": mode,
+        "checks": checks,
+        "unverified_claims": unverified,
+        "summary": counts,
+        "evidence": evidence[:EVIDENCE_LIMIT],
+    }
+
+
 def dispatch(name, arguments):
     handlers = {
         "repo_map": repo_map,
         "system_model": system_model,
         "architecture_review": architecture_review,
         "impact_analysis": impact_analysis,
+        "verify_change": verify_change,
+        "self_test": self_test,
         "find_code": find_code,
         "compress_output": compress_output,
         "review_code": review_code,
@@ -2334,6 +3312,31 @@ def main():
     impact.add_argument("--depth", type=int, default=3,
                         help="reverse-dependency depth, 1-10 (default 3)")
     impact.add_argument("--contract", help="contract path relative to the repository root")
+    verify = sub.add_parser("verify-change")
+    verify.add_argument("path")
+    verify.add_argument("--changed", action="append",
+                       help="repository-relative changed file (repeatable)")
+    verify.add_argument("--diff-file", help="read a unified diff from this file")
+    verify.add_argument("--symbol", action="append",
+                        help="target symbol whose definition site is the change (repeatable)")
+    verify.add_argument("--level", action="append", choices=VERIFY_LEVELS,
+                        help="additional verification level (repeatable)")
+    verify.add_argument("--depth", type=int, default=3,
+                        help="reverse-dependency depth, 1-10 (default 3)")
+    verify.add_argument("--contract", help="contract path relative to the repository root")
+    verify.add_argument("--policy-file", help="verification policy path relative to the root")
+    verify.add_argument("--allow-execute", action="store_true",
+                        help="run whitelisted L2-L4 policy checks")
+    verify.add_argument("--timeout", type=int, default=120,
+                        help="upper bound for each check in seconds")
+    self_test_parser = sub.add_parser("self-test")
+    self_test_parser.add_argument("path")
+    self_test_parser.add_argument("--mode", choices=("auto", "source", "installed"),
+                                  default="auto")
+    self_test_parser.add_argument("--allow-execute", action="store_true",
+                                  help="run the target test suite")
+    self_test_parser.add_argument("--timeout", type=int, default=120,
+                                  help="test timeout in seconds")
     find = sub.add_parser("find-code")
     find.add_argument("path")
     find.add_argument("query")
@@ -2358,6 +3361,21 @@ def main():
         result = impact_analysis(args.path, changed_files=args.changed, diff=diff_text,
                                  symbols=args.symbol, depth=args.depth,
                                  contract_file=args.contract)
+    elif args.command == "verify-change":
+        diff_text = None
+        if args.diff_file:
+            diff_text = Path(args.diff_file).read_text(encoding="utf-8")
+        result = verify_change(
+            args.path, changed_files=args.changed, diff=diff_text,
+            symbols=args.symbol, depth=args.depth, levels=args.level,
+            allow_execute=args.allow_execute, timeout=args.timeout,
+            contract_file=args.contract, policy_file=args.policy_file,
+        )
+    elif args.command == "self-test":
+        result = self_test(
+            args.path, mode=args.mode, allow_execute=args.allow_execute,
+            timeout=args.timeout,
+        )
     elif args.command == "find-code":
         result = find_code(args.path, args.query)
     elif args.command == "compress-output":

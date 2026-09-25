@@ -5,6 +5,7 @@
 import json
 import hashlib
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -1058,6 +1059,471 @@ class ImpactAnalysisTest(unittest.TestCase):
                                             changed_files=["src/core/store.py"])
         self.assertEqual(first, second)
         self.assertEqual(before, self.snapshot())
+
+
+class VerifyChangeTest(unittest.TestCase):
+    """Contract tests for dev_engine.verify_change (S1.3)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        write_tree(self.root, architecture_fixture_files())
+        self.write_contract()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_contract(self, data=None, rel=dev_contract.CONTRACT_PATH):
+        target = self.root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(data or architecture_fixture_contract()), encoding="utf-8"
+        )
+
+    def write_policy(self, data, rel=dev_contract.VERIFICATION_PATH):
+        target = self.root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data), encoding="utf-8")
+
+    def unit_policy(self, required=True):
+        return {
+            "version": 1,
+            "checks": [
+                {
+                    "id": "unit-tests",
+                    "level": "L2",
+                    "kind": "python-unittest",
+                    "cwd": ".",
+                    "timeout": 60,
+                    "required": required,
+                    "claim": "unit tests pass",
+                }
+            ],
+        }
+
+    def write_passing_unit_test(self):
+        (self.root / "test_sample.py").write_text(
+            "import unittest\n\n"
+            "class SampleTest(unittest.TestCase):\n"
+            "    def test_ok(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+
+    def write_failing_unit_test(self):
+        (self.root / "test_sample.py").write_text(
+            "import unittest\n\n"
+            "class SampleTest(unittest.TestCase):\n"
+            "    def test_fail(self):\n"
+            "        self.assertTrue(False)\n",
+            encoding="utf-8",
+        )
+
+    def snapshot(self):
+        digest = {}
+        for path in sorted(self.root.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts:
+                rel = str(path.relative_to(self.root)).replace("\\", "/")
+                digest[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return digest
+
+    def ledger_entry(self, result, check_id):
+        return next(item for item in result["ledger"] if item["id"] == check_id)
+
+    def test_verify_change_passes_clean_change_with_default_ladder(self):
+        result = dev_engine.verify_change(
+            str(self.root), changed_files=["src/core/store.py"]
+        )
+        self.assertEqual(result["status"], "PASS", result["ledger"])
+        self.assertEqual(result["required_levels"], ["L0", "L1"])
+        self.assertEqual(self.ledger_entry(result, "L0-syntax")["status"], "PASS")
+        self.assertEqual(self.ledger_entry(result, "L0-contract")["status"], "PASS")
+        self.assertEqual(self.ledger_entry(result, "L1-architecture")["status"], "PASS")
+        unverified_levels = {item["level"] for item in result["unverified_claims"]}
+        self.assertTrue({"L2", "L3", "L4", "L5"}.issubset(unverified_levels))
+        self.assertIn(
+            "secrets are never stored in plaintext",
+            {item["claim"] for item in result["unverified_claims"]},
+        )
+        self.assertEqual(len(result["ledger_digest"]), 64)
+        self.assertEqual(result["ledger_digest"], hashlib.sha256(
+            json.dumps(result["ledger"], ensure_ascii=False, sort_keys=True,
+                       separators=(",", ":")).encode("utf-8")
+        ).hexdigest())
+
+    def test_verify_change_fails_on_seeded_syntax_error(self):
+        write_tree(self.root, {
+            "src/core/broken.py": "def broken(:\n    return 1\n",
+        })
+        result = dev_engine.verify_change(
+            str(self.root), changed_files=["src/core/broken.py"]
+        )
+        self.assertEqual(result["status"], "FAIL")
+        entry = self.ledger_entry(result, "L0-syntax")
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertEqual(entry["evidence"][0]["path"], "src/core/broken.py")
+        self.assertGreaterEqual(entry["evidence"][0]["line"], 1)
+
+    def test_verify_change_fails_on_architecture_violation_in_scope(self):
+        write_tree(self.root, {"src/core/leak.py": "from src.ui.view import VALUE\n"})
+        result = dev_engine.verify_change(
+            str(self.root), changed_files=["src/core/leak.py"]
+        )
+        self.assertEqual(result["status"], "FAIL")
+        entry = self.ledger_entry(result, "L1-architecture")
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertIn("core-no-ui", entry["evidence"][0]["detail"])
+
+    def test_verify_change_ignores_out_of_scope_violation(self):
+        write_tree(self.root, {"src/core/leak.py": "from src.ui.view import VALUE\n"})
+        result = dev_engine.verify_change(
+            str(self.root), changed_files=["src/core/util.py"]
+        )
+        self.assertEqual(result["status"], "PASS", result["ledger"])
+        self.assertEqual(self.ledger_entry(result, "L1-architecture")["status"], "PASS")
+
+    def test_verify_change_reports_unknown_without_contract(self):
+        (self.root / ".yotta" / "architecture.json").unlink()
+        result = dev_engine.verify_change(
+            str(self.root), changed_files=["src/core/store.py"]
+        )
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertEqual(self.ledger_entry(result, "L0-contract")["status"], "UNKNOWN")
+        self.assertEqual(self.ledger_entry(result, "L1-architecture")["status"], "UNKNOWN")
+
+    def test_verify_change_does_not_execute_without_allow_execute(self):
+        self.write_policy(self.unit_policy())
+        self.write_passing_unit_test()
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L2"],
+            allow_execute=False,
+        )
+        self.assertEqual(result["status"], "UNKNOWN")
+        entry = self.ledger_entry(result, "L2-unit-tests")
+        self.assertEqual(entry["status"], "UNVERIFIED")
+        self.assertIsNone(entry["command"])
+        claim = next(item for item in result["unverified_claims"] if item["level"] == "L2")
+        self.assertEqual(claim["reason"], "allow_execute=false")
+
+    def test_verify_change_runs_declared_l2_check_when_allowed(self):
+        self.write_policy(self.unit_policy())
+        self.write_passing_unit_test()
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L2"],
+            allow_execute=True,
+        )
+        self.assertEqual(result["status"], "PASS", result["ledger"])
+        entry = self.ledger_entry(result, "L2-unit-tests")
+        self.assertEqual(entry["status"], "PASS")
+        self.assertEqual(entry["command"]["kind"], "python-unittest")
+        self.assertEqual(entry["command"]["cwd"], ".")
+        self.assertEqual(entry["command"]["exit_code"], 0)
+        self.assertEqual(len(entry["command"]["output_hash"]), 64)
+
+    def test_verify_change_fails_when_declared_check_fails(self):
+        self.write_policy(self.unit_policy())
+        self.write_failing_unit_test()
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L2"],
+            allow_execute=True,
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(self.ledger_entry(result, "L2-unit-tests")["status"], "FAIL")
+
+    def test_verify_change_requires_policy_for_requested_execution_level(self):
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L2"],
+            allow_execute=True,
+        )
+        self.assertEqual(result["status"], "UNKNOWN")
+        entry = self.ledger_entry(result, "L2-policy")
+        self.assertEqual(entry["status"], "UNKNOWN")
+        claim = next(item for item in result["unverified_claims"] if item["level"] == "L2")
+        self.assertEqual(claim["reason"], "verification-policy-missing")
+
+    def test_verify_change_rejects_invalid_policy(self):
+        policy = self.unit_policy()
+        policy["version"] = 9
+        self.write_policy(policy)
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L2"],
+            allow_execute=True,
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("L2-policy", {item["id"] for item in result["ledger"]})
+        self.assertIn(
+            "verification-unsupported-version",
+            {item["code"] for item in result["policy"]["findings"]},
+        )
+
+    def test_verify_change_rejects_policy_cwd_escape(self):
+        policy = self.unit_policy()
+        policy["checks"][0]["cwd"] = "../outside"
+        self.write_policy(policy)
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L2"],
+            allow_execute=True,
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(
+            "verification-invalid-cwd",
+            {item["code"] for item in result["policy"]["findings"]},
+        )
+
+    def test_verify_change_rejects_unknown_runner_kind(self):
+        policy = self.unit_policy()
+        policy["checks"][0]["kind"] = "remove-everything"
+        self.write_policy(policy)
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L2"],
+            allow_execute=True,
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(
+            "verification-invalid-kind",
+            {item["code"] for item in result["policy"]["findings"]},
+        )
+
+    def test_verify_change_is_read_only_without_allow_execute(self):
+        self.write_policy(self.unit_policy())
+        before = self.snapshot()
+        dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L2"],
+            allow_execute=False,
+        )
+        self.assertEqual(before, self.snapshot())
+
+    def test_verify_change_requires_change_input(self):
+        with self.assertRaises(ValueError):
+            dev_engine.verify_change(str(self.root))
+
+    def test_verify_change_rejects_bad_level(self):
+        with self.assertRaises(ValueError):
+            dev_engine.verify_change(
+                str(self.root),
+                changed_files=["src/core/store.py"],
+                levels=["L9"],
+            )
+
+    def test_verify_change_marks_l5_manual_work_unverified(self):
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/store.py"],
+            levels=["L5"],
+        )
+        l5 = next(item for item in result["unverified_claims"] if item["level"] == "L5")
+        self.assertEqual(l5["status"], "UNVERIFIED")
+        self.assertIn("manual", l5["reason"])
+
+
+class SelfTestTest(unittest.TestCase):
+    """Contract tests for dev_engine.self_test (S1.3)."""
+
+    SOURCE_ROOT = Path(__file__).resolve().parents[1]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def copy_source_repo(self, name="repo"):
+        target = self.root / name
+        shutil.copytree(
+            str(self.SOURCE_ROOT),
+            str(target),
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc", "*.pyo"),
+        )
+        return target
+
+    def write_installed_skill(self, name="installed"):
+        target = self.root / name
+        (target / "assets").mkdir(parents=True)
+        (target / "SKILL.md").write_text(
+            "---\n"
+            "name: yotta-dev-mcp\n"
+            "description: test install\n"
+            "version: 0.2.0\n"
+            "license: MIT\n"
+            "---\n\n"
+            "# 元开\n",
+            encoding="utf-8",
+        )
+        (target / "assets" / "banner.png").write_bytes(b"png")
+        return target
+
+    def check(self, result, check_id):
+        return next(item for item in result["checks"] if item["id"] == check_id)
+
+    def snapshot(self, root):
+        digest = {}
+        for path in sorted(root.rglob("*")):
+            if (
+                path.is_file()
+                and ".git" not in path.parts
+                and "__pycache__" not in path.parts
+            ):
+                rel = str(path.relative_to(root)).replace("\\", "/")
+                digest[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return digest
+
+    def test_self_test_passes_on_source_repo(self):
+        result = dev_engine.self_test(str(self.SOURCE_ROOT))
+        self.assertEqual(result["status"], "PASS", result["checks"])
+        self.assertEqual(result["mode"], "source")
+        ids = {item["id"] for item in result["checks"]}
+        self.assertEqual(
+            ids,
+            {"files", "versions", "tool-contracts", "write-gates",
+             "verifier-counterexamples"},
+        )
+        self.assertEqual(self.check(result, "verifier-counterexamples")["status"], "PASS")
+
+    def test_self_test_installed_mode_passes(self):
+        target = self.write_installed_skill()
+        result = dev_engine.self_test(str(target), mode="installed")
+        self.assertEqual(result["status"], "PASS", result["checks"])
+        self.assertEqual(result["mode"], "installed")
+        self.assertEqual(self.check(result, "files")["status"], "PASS")
+        self.assertEqual(self.check(result, "skill-version")["status"], "PASS")
+
+    def test_self_test_auto_mode_uses_source_when_scripts_exist(self):
+        target = self.copy_source_repo()
+        (target / "package.json").unlink()
+        result = dev_engine.self_test(str(target))
+        self.assertEqual(result["mode"], "source")
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(
+            "missing-file",
+            {item["code"] for item in self.check(result, "files")["evidence"]},
+        )
+
+    def test_self_test_detects_missing_required_file(self):
+        target = self.copy_source_repo()
+        (target / "SKILL.md").unlink()
+        result = dev_engine.self_test(str(target))
+        self.assertEqual(result["status"], "FAIL")
+        entry = self.check(result, "files")
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertIn("missing-file", {item["code"] for item in entry["evidence"]})
+
+    def test_self_test_detects_version_mismatch(self):
+        target = self.copy_source_repo()
+        package_path = target / "package.json"
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+        package["version"] = "9.9.9"
+        package_path.write_text(json.dumps(package), encoding="utf-8")
+        result = dev_engine.self_test(str(target))
+        self.assertEqual(result["status"], "FAIL")
+        entry = self.check(result, "versions")
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertIn("version-mismatch", {item["code"] for item in entry["evidence"]})
+
+    def test_self_test_detects_tool_name_drift(self):
+        target = self.copy_source_repo()
+        protocol = target / "scripts" / "yotta_dev_mcp.py"
+        text = protocol.read_text(encoding="utf-8")
+        text = text.replace(
+            '"name": "workflow_state",',
+            '"name": "workflow_state_drift",',
+            1,
+        )
+        protocol.write_text(text, encoding="utf-8")
+        result = dev_engine.self_test(str(target))
+        self.assertEqual(result["status"], "FAIL")
+        entry = self.check(result, "tool-contracts")
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertIn("tool-name-drift", {item["code"] for item in entry["evidence"]})
+
+    def test_self_test_detects_tool_schema_drift(self):
+        target = self.copy_source_repo()
+        protocol = target / "scripts" / "yotta_dev_mcp.py"
+        text = protocol.read_text(encoding="utf-8")
+        text = text.replace('"additionalProperties": False,',
+                            '"additionalProperties": True,', 1)
+        protocol.write_text(text, encoding="utf-8")
+        result = dev_engine.self_test(str(target))
+        self.assertEqual(result["status"], "FAIL")
+        entry = self.check(result, "tool-contracts")
+        self.assertIn("tool-schema-drift", {item["code"] for item in entry["evidence"]})
+
+    def test_self_test_detects_write_gate_drift(self):
+        target = self.copy_source_repo()
+        engine_path = target / "scripts" / "dev_engine.py"
+        text = engine_path.read_text(encoding="utf-8")
+        text = text.replace(
+            "def run_checks(kind, cwd, timeout=120, allow_execute=False):",
+            "def run_checks(kind, cwd, timeout=120, allow_execute=True):",
+            1,
+        )
+        engine_path.write_text(text, encoding="utf-8")
+        result = dev_engine.self_test(str(target))
+        self.assertEqual(result["status"], "FAIL")
+        entry = self.check(result, "write-gates")
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertIn("write-gate-drift", {item["code"] for item in entry["evidence"]})
+
+    def test_self_test_counterexamples_include_mutation_control(self):
+        result = dev_engine.self_test(str(self.SOURCE_ROOT))
+        entry = self.check(result, "verifier-counterexamples")
+        kinds = {item["kind"] for item in entry["evidence"]}
+        self.assertIn("seeded-defect", kinds)
+        self.assertIn("mutation-control", kinds)
+        self.assertTrue(all(item["passed"] for item in entry["evidence"]))
+
+    def test_self_test_is_read_only_by_default(self):
+        before = self.snapshot(self.SOURCE_ROOT)
+        dev_engine.self_test(str(self.SOURCE_ROOT))
+        self.assertEqual(before, self.snapshot(self.SOURCE_ROOT))
+
+    def test_self_test_runs_test_suite_when_explicitly_allowed(self):
+        target = self.write_installed_skill()
+        (target / "test_ok.py").write_text(
+            "import unittest\n\n"
+            "class OkTest(unittest.TestCase):\n"
+            "    def test_ok(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        result = dev_engine.self_test(
+            str(target), mode="installed", allow_execute=True
+        )
+        self.assertEqual(result["status"], "PASS", result["checks"])
+        entry = self.check(result, "tests")
+        self.assertEqual(entry["status"], "PASS")
+        self.assertEqual(entry["command"]["kind"], "python-unittest")
+
+    def test_self_test_installed_missing_skill_fails(self):
+        target = self.root / "empty"
+        target.mkdir()
+        result = dev_engine.self_test(str(target), mode="installed")
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(self.check(result, "files")["status"], "FAIL")
+
+    def test_self_test_rejects_unknown_mode(self):
+        with self.assertRaises(ValueError):
+            dev_engine.self_test(str(self.SOURCE_ROOT), mode="nope")
+
+    def test_self_test_rejects_missing_root(self):
+        with self.assertRaises(ValueError):
+            dev_engine.self_test(str(self.root / "nope"))
 
 
 if __name__ == "__main__":

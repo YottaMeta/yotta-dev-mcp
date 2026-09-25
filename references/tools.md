@@ -77,6 +77,57 @@ Output: `status`, `inputs`, `changed`, `direct_consumers`, `cone` (`nodes` with
 `UNKNOWN` while anything is undecided, otherwise `PASS`. Read-only; no command is
 executed.
 
+## verify_change
+
+Input:
+
+- `path` (required): repository or source directory.
+- `changed_files` / `diff` / `symbols` (at least one): the same change inputs as
+  `impact_analysis`.
+- `depth` (optional, default 3, 1-10): reverse-dependency depth.
+- `levels` (optional): additional execution levels `L2`, `L3`, `L4` or manual `L5`.
+  L0 and L1 always run.
+- `allow_execute` (optional, default false): required before any L2-L4 check runs.
+- `timeout` (optional, default 120, 1-600): upper bound for each policy check.
+- `max_files` / `contract_file` (optional): model limit and contract override.
+- `policy_file` (optional, default `.yotta/verification.json`): policy override.
+
+Output: `status`, `inputs`, `required_levels`, `ledger`, `unverified_claims`,
+`policy`, `evidence`, `ledger_digest`, `model_digest` and `impact_status`.
+
+Every ledger entry has `id`, `level`, `claim`, `status` (`PASS` / `FAIL` / `UNKNOWN` /
+`UNVERIFIED`), `severity`, `check`, `confidence`, `evidence`, `next_step` and
+`command`. Static checks keep `command` as `null`; executed checks record the
+whitelisted kind, relative cwd, exit code, timeout flag and `output_hash`.
+
+The default ladder runs L0 (changed-file syntax, contract schema) and L1 (architecture
+rules and boundaries inside the change cone). L2-L4 are skipped unless both a policy
+check is declared and `allow_execute=true`; they never accept arbitrary commands.
+L5 is always manual and stays in `unverified_claims`. The ledger intentionally has no
+wall-clock timestamp: its digest and the command output hashes are the reproducible
+evidence anchors.
+
+## self_test
+
+Input:
+
+- `path` (required): source checkout or installed skill directory.
+- `mode` (optional, default `auto`): `auto`, `source` or `installed`.
+- `allow_execute` (optional, default false): run the target test suite.
+- `timeout` (optional, default 120, 1-600).
+
+Source mode checks required files, version alignment across `package.json` /
+`SKILL.md` / `CHANGELOG.md` / `server.json` / engine `VERSION`, protocol tool names
+and `inputSchema.additionalProperties=false`, fail-closed defaults for every write or
+execute gate, and counterexamples. Installed mode checks `SKILL.md` and the installed
+asset payload, and records source-only checks as out of scope.
+
+The counterexample suite is in-process and deterministic: a seeded forbidden
+dependency must be `FAIL`, removing the rule must stop the failure, an invalid
+contract must be `FAIL` or `UNKNOWN`, a missing contract must be `UNKNOWN`, a seeded
+credential must be found, and a seeded version mismatch must fail readiness. These
+probes prove the verifier is not a rubber stamp.
+
 ## find_code
 
 Input:

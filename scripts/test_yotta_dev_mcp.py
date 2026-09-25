@@ -76,7 +76,7 @@ class YottaDevMcpTest(unittest.TestCase):
         })
         self.assertEqual(response["result"]["resultType"], "complete")
 
-    def test_tools_list_has_fifteen_contracts(self):
+    def test_tools_list_has_seventeen_contracts(self):
         response = server.handle_message({
             "jsonrpc": "2.0",
             "id": 3,
@@ -89,6 +89,8 @@ class YottaDevMcpTest(unittest.TestCase):
             "system_model",
             "architecture_review",
             "impact_analysis",
+            "verify_change",
+            "self_test",
             "find_code",
             "compress_output",
             "review_code",
@@ -171,6 +173,58 @@ class YottaDevMcpTest(unittest.TestCase):
         response = self.call("impact_analysis", {"path": str(self.root)})
         self.assertTrue(response["result"]["isError"])
 
+    def test_verify_change_tool(self):
+        (self.root / ".yotta").mkdir()
+        (self.root / ".yotta" / "architecture.json").write_text(json.dumps({
+            "version": 1,
+            "layers": [
+                {"id": "core", "paths": ["core/**"], "risk": "high"},
+                {"id": "boot", "paths": ["main.py"]},
+            ],
+        }), encoding="utf-8")
+        (self.root / "core").mkdir()
+        (self.root / "core" / "util.py").write_text(
+            "def helper(value):\n    return value + 1\n", encoding="utf-8"
+        )
+        response = self.call("verify_change", {
+            "path": str(self.root),
+            "changed_files": ["core/util.py"],
+        })
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(payload["status"], "PASS", payload["ledger"])
+        self.assertEqual(
+            [item["id"] for item in payload["ledger"]],
+            ["L0-contract", "L0-syntax", "L1-architecture"],
+        )
+
+    def test_verify_change_requires_change_input(self):
+        response = self.call("verify_change", {"path": str(self.root)})
+        self.assertTrue(response["result"]["isError"])
+
+    def test_self_test_tool_installed_mode(self):
+        skill = self.root / "installed"
+        (skill / "assets").mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\n"
+            "name: yotta-dev-mcp\n"
+            "description: test install\n"
+            "version: 0.2.0\n"
+            "license: MIT\n"
+            "---\n\n"
+            "# 元开\n",
+            encoding="utf-8",
+        )
+        (skill / "assets" / "banner.png").write_bytes(b"png")
+        response = self.call("self_test", {
+            "path": str(skill),
+            "mode": "installed",
+        })
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(payload["status"], "PASS", payload["checks"])
+        self.assertEqual(payload["mode"], "installed")
+
     def test_find_code_tool(self):
         response = self.call("find_code", {"path": str(self.root), "query": "helper"})
         payload = json.loads(response["result"]["content"][0]["text"])
@@ -248,7 +302,7 @@ class YottaDevMcpTest(unittest.TestCase):
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         self.assertEqual(len(lines), 2)
         self.assertEqual(json.loads(lines[0])["result"]["serverInfo"]["name"], "yotta-dev-mcp")
-        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 15)
+        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 17)
 
 
 if __name__ == "__main__":

@@ -186,6 +186,59 @@ files), `invariant` (declared `command` checks) and `model` (fallback when the c
 has no anchor). Test files that only guard on `__main__` are covered by the test
 probe and are not reported as startup entrypoints.
 
+## verification policy
+
+`.yotta/verification.json` is optional. It declares the L2-L4 checks that
+`verify_change` may execute, plus manual work that must stay unverified. It never
+holds shell strings: `kind` must be one of the whitelisted runners already supported
+by `run_checks`.
+
+```json
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "unit-tests",
+      "level": "L2",
+      "kind": "python-unittest",
+      "cwd": ".",
+      "timeout": 120,
+      "required": true,
+      "claim": "the unit suite passes"
+    }
+  ],
+  "manual": [
+    {"id": "independent-review", "claim": "a second person reviews the change"}
+  ]
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `version` | yes | Must be `1`. |
+| `checks` | no | Array of L2-L4 checks. |
+| `checks[].id` | yes | Unique slug matching the same id rule as the architecture contract. |
+| `checks[].level` | yes | `L2`, `L3` or `L4`. |
+| `checks[].kind` | yes | `python-unittest`, `pytest`, `python-compile`, `npm-test` or `npm-lint`. |
+| `checks[].cwd` | no | Repository-relative directory, default `.`; absolute paths and `..` are rejected. |
+| `checks[].timeout` | no | 1-600 seconds, default 120. |
+| `checks[].required` | no | Default `true`; a required check that did not run keeps the overall result `UNKNOWN`. |
+| `checks[].claim` | no | Human-readable claim recorded in the ledger. |
+| `manual[].id` / `manual[].claim` | yes | Manual claims that are always reported as unverified. |
+
+Verification findings use the same evidence shape as the architecture contract:
+`code`, `severity`, `message`, JSON `pointer`, `path` and short `evidence`.
+Blocking codes include `verification-invalid-json`,
+`verification-unsupported-version`, `verification-invalid-id`,
+`verification-duplicate-check`, `verification-invalid-level`,
+`verification-invalid-kind`, `verification-invalid-cwd`,
+`verification-invalid-timeout` and `verification-invalid-manual`.
+
+`verify_change` runs L0/L1 in-process. L2-L4 execute only when the caller passes
+`allow_execute=true`; L5 is always manual. A `PASS` means every required claim has
+evidence. Unrun or manual claims remain in `unverified_claims` and are never written
+as passing.
+
 ## Command line
 
 ```bash
@@ -195,4 +248,7 @@ python scripts/dev_engine.py architecture-review .
 python scripts/dev_engine.py impact-analysis . --changed src/core/store.py
 python scripts/dev_engine.py impact-analysis . --diff-file change.patch --depth 2
 python scripts/dev_engine.py impact-analysis . --symbol save
+python scripts/dev_engine.py verify-change . --changed src/core/store.py
+python scripts/dev_engine.py verify-change . --changed src/core/store.py --level L2 --allow-execute
+python scripts/dev_engine.py self-test .
 ```

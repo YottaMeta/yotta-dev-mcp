@@ -12,6 +12,8 @@ Deterministic local development tools exposed over a stdio MCP server.
 | `system_model` | Build a system model with layer data from the architecture contract. |
 | `architecture_review` | Review dependency rules, boundaries and data ownership with evidence. |
 | `impact_analysis` | Build the change impact cone with tests, blast radius and rollback probes. |
+| `verify_change` | Run the L0-L5 verification ladder and return an evidence ledger. |
+| `self_test` | Check files, versions, tool contracts, write gates and seeded-defect counterexamples. |
 | `find_code` | Locate symbols and text with bounded results. |
 | `compress_output` | Compress long logs while keeping errors and head/tail context. |
 | `review_code` | Apply deterministic review rules with file, line and evidence. |
@@ -24,7 +26,8 @@ Deterministic local development tools exposed over a stdio MCP server.
 | `scaffold_skill` | Plan or create a minimal skill scaffold; dry-run by default. |
 | `workflow_state` | Read `.workflow` and optionally append an explicit log entry. |
 
-Twelve tools are read-only; `run_checks` requires `allow_execute=true`, and
+Tools are read-only by default; `run_checks`, the L2-L4 policy checks in
+`verify_change`, and the test subset in `self_test` require `allow_execute=true`.
 `scaffold_skill` / `workflow_state` require `apply=true` before writing. Python 3.8+
 standard library is sufficient; no network access is required.
 
@@ -43,6 +46,18 @@ cannot be decided from the model becomes `UNKNOWN` instead of a silent pass.
 walks reverse dependencies into a bounded cone: direct consumers, affected layers,
 boundaries, data stores, invariants, mapped tests, an explainable blast radius and
 rollback probes. It executes nothing.
+
+`verify_change` runs the post-change ladder: L0 syntax and contract schema, L1
+architecture checks inside the impact cone, L2-L4 whitelisted checks declared in
+`.yotta/verification.json` with explicit `allow_execute=true`, and L5 independent
+review kept as unverified work. Ledger entries carry a claim, status, evidence,
+check name and output hash so the result can be recomputed; skipped levels are never
+written as passing.
+
+`self_test` checks the integrity of yotta-dev-mcp itself: required files, version
+alignment across package / SKILL / CHANGELOG / server / engine, protocol tool schema
+drift, fail-closed write gates, and seeded-defect plus mutation controls that prove
+the verifier turns red or unknown. The test suite is not executed by default.
 
 Schema, glob rules, finding codes and cone fields: `references/architecture-contract.md`.
 
@@ -84,6 +99,9 @@ python scripts/dev_engine.py repo-map .
 python scripts/dev_engine.py system-model .
 python scripts/dev_engine.py architecture-review .
 python scripts/dev_engine.py impact-analysis . --changed src/core/store.py
+python scripts/dev_engine.py verify-change . --changed src/core/store.py
+python scripts/dev_engine.py verify-change . --changed src/core/store.py --level L2 --allow-execute
+python scripts/dev_engine.py self-test .
 python scripts/dev_engine.py find-code . "helper"
 python scripts/dev_engine.py review-code .
 python scripts/dev_engine.py mcp-doctor
@@ -98,5 +116,6 @@ python scripts/dev_engine.py mcp-doctor
 ## Current version
 
 `0.2.0` is in development: it adds `system_model`, `architecture_review`,
-`impact_analysis` and the `.yotta/architecture.json` contract on top of the twelve
-deterministic tools. The npm `latest` tag stays `0.1.1` until this version is released.
+`impact_analysis`, `verify_change`, `self_test`, and the `.yotta/architecture.json`
+plus optional `.yotta/verification.json` contracts on top of the twelve deterministic
+tools. The npm `latest` tag stays `0.1.1` until this version is released.

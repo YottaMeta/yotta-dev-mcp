@@ -56,7 +56,7 @@ def _tool(name, arguments):
 TOOL_HANDLERS = {
     name: (lambda arguments, tool_name=name: _tool(tool_name, arguments))
     for name in ("repo_map", "system_model", "architecture_review", "impact_analysis",
-                 "find_code", "compress_output",
+                 "verify_change", "self_test", "find_code", "compress_output",
                  "review_code", "review_diff", "mcp_doctor",
                  "scan_secrets", "scan_dependencies", "check_publish_readiness",
                  "run_checks", "scaffold_skill", "workflow_state")
@@ -162,6 +162,91 @@ def mcp_tools():
                         "description": "Contract path relative to the repository root "
                                        "(default .yotta/architecture.json)",
                     },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "verify_change",
+            "description": (
+                "Run the L0-L5 verification ladder for a local change and return "
+                "a deterministic evidence ledger. L0 syntax/contract and L1 "
+                "architecture checks run by default; L2-L4 require a whitelisted "
+                ".yotta/verification.json check plus allow_execute=true. L5 is "
+                "always recorded as manual work. Read-only unless execution is "
+                "explicitly enabled."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Repository or source directory"},
+                    "changed_files": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Repository-relative changed files",
+                    },
+                    "diff": {"type": "string",
+                             "description": "Unified diff text to read changed files from"},
+                    "symbols": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Target symbols; their definition sites become the change",
+                    },
+                    "depth": {"type": "integer", "minimum": 1, "maximum": 10,
+                              "description": "Reverse-dependency depth (default 3)"},
+                    "levels": {
+                        "type": "array",
+                        "items": {"enum": ["L0", "L1", "L2", "L3", "L4", "L5"]},
+                        "description": "Additional verification levels; L2-L4 require "
+                                       "a policy and explicit execution",
+                    },
+                    "allow_execute": {
+                        "type": "boolean",
+                        "description": "Must be true to run whitelisted policy checks; default false",
+                    },
+                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600,
+                                "description": "Upper bound for each check in seconds (default 120)"},
+                    "max_files": {"type": "integer", "minimum": 1,
+                                  "description": "Maximum source files to inspect (default 2000)"},
+                    "contract_file": {
+                        "type": "string",
+                        "description": "Contract path relative to the repository root "
+                                       "(default .yotta/architecture.json)",
+                    },
+                    "policy_file": {
+                        "type": "string",
+                        "description": "Verification policy path relative to the repository root "
+                                       "(default .yotta/verification.json)",
+                    },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "self_test",
+            "description": (
+                "Run deterministic integrity checks on yotta-dev-mcp itself: "
+                "required files, version alignment, protocol/tool schema drift, "
+                "fail-closed write gates and seeded-defect counterexamples. Use "
+                "installed mode for a skill copy and source mode for the checkout. "
+                "Test-suite execution requires allow_execute=true; read-only by default."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string",
+                             "description": "Source checkout or installed skill directory"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "source", "installed"],
+                        "description": "auto detects source vs installed layout",
+                    },
+                    "allow_execute": {
+                        "type": "boolean",
+                        "description": "Run the project test suite; default false",
+                    },
+                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600,
+                                "description": "Test timeout in seconds (default 120)"},
                 },
                 "required": ["path"],
                 "additionalProperties": False,
@@ -423,8 +508,11 @@ def handle_message(msg):
                         "yotta-dev-mcp exposes deterministic local development tools. "
                         "Prefer repo_map/find_code before editing, review_diff before PR, "
                         "review_code for focused review, compress_output for long logs and "
-                        "mcp_doctor for local configuration checks. All six tools are offline "
-                        "and read-only."
+                        "mcp_doctor for local configuration checks. Use system_model and "
+                        "architecture_review for architecture contracts, impact_analysis and "
+                        "verify_change for change-centered evidence, and self_test for "
+                        "integrity checks. Tools are offline and read-only unless an explicit "
+                        "write or execute flag is set."
                     ),
                 }, (3600000, "public")),
             }

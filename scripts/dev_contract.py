@@ -14,6 +14,7 @@ from pathlib import Path
 CONTRACT_PATH = ".yotta/architecture.json"
 VERIFICATION_PATH = ".yotta/verification.json"
 CONTRACT_VERSION = 1
+VERIFICATION_VERSION = 1
 
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 BLOCKING_SEVERITIES = ("critical", "high")
@@ -27,6 +28,15 @@ TOP_LEVEL_KEYS = frozenset({
     "version", "project", "layers", "rules", "boundaries",
     "data_ownership", "invariants", "risk_weights",
 })
+VERIFICATION_LEVELS = ("L2", "L3", "L4")
+VERIFICATION_KINDS = (
+    "python-unittest", "pytest", "python-compile", "npm-test", "npm-lint",
+)
+VERIFICATION_TOP_LEVEL_KEYS = frozenset({"version", "checks", "manual"})
+VERIFICATION_CHECK_KEYS = frozenset({
+    "id", "level", "kind", "cwd", "timeout", "required", "claim",
+})
+VERIFICATION_MANUAL_KEYS = frozenset({"id", "claim"})
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -493,6 +503,201 @@ def load_contract(root, contract_file=None):
     return validate_contract(data, source=rel)
 
 
+def _verification_result(present, path, policy, findings, version=None):
+    ordered = sorted(findings, key=lambda item: (item["pointer"], item["code"], item["message"]))
+    blocking = any(item["severity"] in BLOCKING_SEVERITIES for item in ordered)
+    return {
+        "present": bool(present),
+        "path": path,
+        "ok": not blocking,
+        "status": "FAIL" if blocking else "PASS",
+        "version": version if version is not None
+                   else (policy or {}).get("version"),
+        "policy": policy,
+        "checks": list((policy or {}).get("checks") or []),
+        "manual": list((policy or {}).get("manual") or []),
+        "findings": ordered,
+    }
+
+
+def validate_verification_policy(data, source=VERIFICATION_PATH):
+    """Validate `.yotta/verification.json` v1 and return a normalized policy."""
+    source = str(source).replace("\\", "/")
+    findings = []
+
+    def add(code, severity, message, pointer, evidence):
+        findings.append({
+            "code": code,
+            "severity": severity,
+            "message": message,
+            "pointer": pointer,
+            "path": source,
+            "evidence": evidence,
+        })
+
+    if not isinstance(data, dict):
+        add("verification-invalid-root", "critical",
+            "verification policy must be a JSON object", "", repr(type(data).__name__))
+        return _verification_result(True, source, None, findings)
+
+    version = data.get("version")
+    if version != VERIFICATION_VERSION:
+        add("verification-unsupported-version", "critical",
+            "unsupported verification policy version", "/version", repr(version))
+    for key in sorted(data):
+        if key not in VERIFICATION_TOP_LEVEL_KEYS:
+            add("verification-unknown-key", "low",
+                "unknown verification policy key", "/" + key, repr(key))
+
+    raw_checks = data.get("checks", [])
+    if not isinstance(raw_checks, list):
+        add("verification-invalid-checks", "critical",
+            "checks must be an array", "/checks", repr(type(raw_checks).__name__))
+        raw_checks = []
+    checks = []
+    seen_check_ids = set()
+    for index, item in enumerate(raw_checks):
+        pointer = "/checks/%d" % index
+        if not isinstance(item, dict):
+            add("verification-invalid-check", "high",
+                "check must be an object", pointer, repr(type(item).__name__))
+            continue
+        for key in sorted(item):
+            if key not in VERIFICATION_CHECK_KEYS:
+                add("verification-unknown-check-key", "low",
+                    "unknown check key", pointer + "/" + key, repr(key))
+        check_id = item.get("id")
+        level = item.get("level")
+        kind = item.get("kind")
+        cwd = item.get("cwd", ".")
+        timeout = item.get("timeout", 120)
+        required = item.get("required", True)
+        claim = item.get("claim")
+        valid = True
+        if not _is_id(check_id):
+            add("verification-invalid-id", "high",
+                "check id must be a lower-case slug", pointer + "/id", repr(check_id))
+            valid = False
+        elif check_id in seen_check_ids:
+            add("verification-duplicate-check", "high",
+                "check id must be unique", pointer + "/id", repr(check_id))
+            valid = False
+        else:
+            seen_check_ids.add(check_id)
+        if level not in VERIFICATION_LEVELS:
+            add("verification-invalid-level", "high",
+                "check level must be L2, L3 or L4", pointer + "/level", repr(level))
+            valid = False
+        if kind not in VERIFICATION_KINDS:
+            add("verification-invalid-kind", "high",
+                "check kind is not in the whitelist", pointer + "/kind", repr(kind))
+            valid = False
+        cwd_problem = _path_problem(cwd)
+        if cwd_problem:
+            add("verification-invalid-cwd", "high",
+                "check cwd must stay inside the repository", pointer + "/cwd",
+                cwd_problem)
+            valid = False
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 600:
+            add("verification-invalid-timeout", "high",
+                "timeout must be an integer between 1 and 600",
+                pointer + "/timeout", repr(timeout))
+            valid = False
+        if not isinstance(required, bool):
+            add("verification-invalid-required", "high",
+                "required must be a boolean", pointer + "/required", repr(required))
+            valid = False
+        if claim is not None and (not isinstance(claim, str) or not claim.strip()):
+            add("verification-invalid-claim", "medium",
+                "claim must be a non-empty string when present",
+                pointer + "/claim", repr(claim))
+        if not valid:
+            continue
+        checks.append({
+            "id": check_id,
+            "level": level,
+            "kind": kind,
+            "cwd": str(cwd).replace("\\", "/"),
+            "timeout": timeout,
+            "required": required,
+            "claim": claim.strip() if isinstance(claim, str) else None,
+        })
+
+    raw_manual = data.get("manual", [])
+    if not isinstance(raw_manual, list):
+        add("verification-invalid-manual-list", "critical",
+            "manual must be an array", "/manual", repr(type(raw_manual).__name__))
+        raw_manual = []
+    manual = []
+    seen_manual_ids = set()
+    for index, item in enumerate(raw_manual):
+        pointer = "/manual/%d" % index
+        if not isinstance(item, dict):
+            add("verification-invalid-manual", "high",
+                "manual claim must be an object", pointer, repr(type(item).__name__))
+            continue
+        for key in sorted(item):
+            if key not in VERIFICATION_MANUAL_KEYS:
+                add("verification-unknown-manual-key", "low",
+                    "unknown manual claim key", pointer + "/" + key, repr(key))
+        manual_id = item.get("id")
+        claim = item.get("claim")
+        valid = True
+        if not _is_id(manual_id):
+            add("verification-invalid-manual", "high",
+                "manual claim id must be a lower-case slug",
+                pointer + "/id", repr(manual_id))
+            valid = False
+        elif manual_id in seen_manual_ids:
+            add("verification-duplicate-manual", "high",
+                "manual claim id must be unique", pointer + "/id", repr(manual_id))
+            valid = False
+        else:
+            seen_manual_ids.add(manual_id)
+        if not isinstance(claim, str) or not claim.strip():
+            add("verification-invalid-manual", "high",
+                "manual claim must be a non-empty string",
+                pointer + "/claim", repr(claim))
+            valid = False
+        if valid:
+            manual.append({"id": manual_id, "claim": claim.strip()})
+
+    policy = {
+        "version": VERIFICATION_VERSION,
+        "checks": checks,
+        "manual": manual,
+    }
+    return _verification_result(True, source, policy, findings)
+
+
+def load_verification_policy(root, policy_file=None):
+    """Load and validate the optional verification policy; never raises on bad input."""
+    rel = str(policy_file or VERIFICATION_PATH).replace("\\", "/")
+    target = Path(root) / rel
+    if not target.is_file():
+        return _verification_result(False, rel, None, [], version=None)
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError as exc:
+        finding = {
+            "code": "verification-unreadable", "severity": "critical",
+            "message": "verification policy could not be read", "pointer": "",
+            "path": rel, "evidence": str(exc),
+        }
+        return _verification_result(True, rel, None, [finding])
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        finding = {
+            "code": "verification-invalid-json", "severity": "critical",
+            "message": "invalid JSON: %s" % exc.msg, "pointer": "",
+            "path": rel,
+            "evidence": "line %d, column %d" % (exc.lineno, exc.colno),
+        }
+        return _verification_result(True, rel, None, [finding])
+    return validate_verification_policy(data, source=rel)
+
+
 def contract_schema():
     """Return a JSON-Schema description of `.yotta/architecture.json` v1."""
     layer = {
@@ -582,5 +787,44 @@ def contract_schema():
                 "type": "object",
                 "additionalProperties": {"type": "number", "minimum": 0, "maximum": 5},
             },
+        },
+    }
+
+
+def verification_schema():
+    """Return a JSON-Schema description of `.yotta/verification.json` v1."""
+    check = {
+        "type": "object",
+        "required": ["id", "level", "kind"],
+        "additionalProperties": False,
+        "properties": {
+            "id": {"type": "string", "pattern": ID_RE.pattern},
+            "level": {"enum": list(VERIFICATION_LEVELS)},
+            "kind": {"enum": list(VERIFICATION_KINDS)},
+            "cwd": {"type": "string"},
+            "timeout": {"type": "integer", "minimum": 1, "maximum": 600},
+            "required": {"type": "boolean"},
+            "claim": {"type": "string"},
+        },
+    }
+    manual = {
+        "type": "object",
+        "required": ["id", "claim"],
+        "additionalProperties": False,
+        "properties": {
+            "id": {"type": "string", "pattern": ID_RE.pattern},
+            "claim": {"type": "string"},
+        },
+    }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "yotta verification policy (.yotta/verification.json)",
+        "type": "object",
+        "required": ["version"],
+        "additionalProperties": False,
+        "properties": {
+            "version": {"const": VERIFICATION_VERSION},
+            "checks": {"type": "array", "items": check},
+            "manual": {"type": "array", "items": manual},
         },
     }

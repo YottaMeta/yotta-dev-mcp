@@ -307,5 +307,141 @@ class DevContractTest(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+class VerificationPolicyTest(unittest.TestCase):
+    """Contract tests for .yotta/verification.json policy validation (S1.3)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def valid_policy(self):
+        return {
+            "version": 1,
+            "checks": [
+                {
+                    "id": "unit-tests",
+                    "level": "L2",
+                    "kind": "python-unittest",
+                    "claim": "unit tests pass",
+                },
+                {
+                    "id": "integration-tests",
+                    "level": "L3",
+                    "kind": "npm-test",
+                    "cwd": "web",
+                    "timeout": 300,
+                    "required": False,
+                    "claim": "integration tests pass",
+                },
+            ],
+            "manual": [
+                {"id": "review", "claim": "a second person reviews the change"}
+            ],
+        }
+
+    def write_policy(self, data, rel=dev_contract.VERIFICATION_PATH):
+        target = self.root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data), encoding="utf-8")
+        return target
+
+    @staticmethod
+    def codes(result):
+        return {item["code"] for item in result["findings"]}
+
+    def test_valid_policy_is_normalized(self):
+        self.write_policy(self.valid_policy())
+        result = dev_contract.load_verification_policy(str(self.root))
+        self.assertTrue(result["present"])
+        self.assertTrue(result["ok"], result["findings"])
+        self.assertEqual(result["version"], 1)
+        self.assertEqual([item["id"] for item in result["checks"]],
+                         ["unit-tests", "integration-tests"])
+        first = result["checks"][0]
+        self.assertEqual(first["cwd"], ".")
+        self.assertEqual(first["timeout"], 120)
+        self.assertIs(first["required"], True)
+        second = result["checks"][1]
+        self.assertEqual(second["cwd"], "web")
+        self.assertEqual(second["timeout"], 300)
+        self.assertIs(second["required"], False)
+
+    def test_missing_policy_is_optional(self):
+        result = dev_contract.load_verification_policy(str(self.root))
+        self.assertFalse(result["present"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"], [])
+        self.assertEqual(result["findings"], [])
+
+    def test_invalid_json_is_critical(self):
+        target = self.root / dev_contract.VERIFICATION_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{", encoding="utf-8")
+        result = dev_contract.load_verification_policy(str(self.root))
+        self.assertFalse(result["ok"])
+        self.assertIn("verification-invalid-json", self.codes(result))
+
+    def test_unsupported_version_fails(self):
+        policy = self.valid_policy()
+        policy["version"] = 3
+        self.write_policy(policy)
+        result = dev_contract.load_verification_policy(str(self.root))
+        self.assertFalse(result["ok"])
+        self.assertIn("verification-unsupported-version", self.codes(result))
+
+    def test_unknown_runner_kind_fails(self):
+        policy = self.valid_policy()
+        policy["checks"][0]["kind"] = "rm -rf"
+        self.write_policy(policy)
+        result = dev_contract.load_verification_policy(str(self.root))
+        self.assertFalse(result["ok"])
+        self.assertIn("verification-invalid-kind", self.codes(result))
+
+    def test_cwd_escape_fails(self):
+        policy = self.valid_policy()
+        policy["checks"][0]["cwd"] = "../outside"
+        self.write_policy(policy)
+        result = dev_contract.load_verification_policy(str(self.root))
+        self.assertFalse(result["ok"])
+        self.assertIn("verification-invalid-cwd", self.codes(result))
+
+    def test_duplicate_ids_and_bad_levels_fail(self):
+        policy = self.valid_policy()
+        policy["checks"][1]["id"] = "unit-tests"
+        policy["checks"][1]["level"] = "L9"
+        self.write_policy(policy)
+        result = dev_contract.load_verification_policy(str(self.root))
+        codes = self.codes(result)
+        self.assertIn("verification-duplicate-check", codes)
+        self.assertIn("verification-invalid-level", codes)
+
+    def test_manual_claims_require_ids_and_claims(self):
+        policy = self.valid_policy()
+        policy["manual"] = [{"id": "review"}, {"claim": "no id"}]
+        self.write_policy(policy)
+        result = dev_contract.load_verification_policy(str(self.root))
+        self.assertIn("verification-invalid-manual", self.codes(result))
+
+    def test_schema_describes_version_one(self):
+        schema = dev_contract.verification_schema()
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(schema["required"], ["version"])
+        self.assertIs(schema["additionalProperties"], False)
+        self.assertEqual(schema["properties"]["version"]["const"], 1)
+        levels = schema["properties"]["checks"]["items"]["properties"]["level"]["enum"]
+        self.assertEqual(sorted(levels), ["L2", "L3", "L4"])
+
+    def test_load_policy_does_not_write(self):
+        self.write_policy(self.valid_policy())
+        folder = self.root / ".yotta"
+        before = sorted(item.name for item in folder.iterdir())
+        dev_contract.load_verification_policy(str(self.root))
+        after = sorted(item.name for item in folder.iterdir())
+        self.assertEqual(before, after)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

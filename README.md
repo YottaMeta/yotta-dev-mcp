@@ -9,6 +9,7 @@ Deterministic local development tools exposed over a stdio MCP server.
 | Tool | Purpose |
 |---|---|
 | `repo_map` | Map modules, imports and entrypoints in a repository. |
+| `system_model` | Build a system model with layer data from the architecture contract. |
 | `find_code` | Locate symbols and text with bounded results. |
 | `compress_output` | Compress long logs while keeping errors and head/tail context. |
 | `review_code` | Apply deterministic review rules with file, line and evidence. |
@@ -21,9 +22,17 @@ Deterministic local development tools exposed over a stdio MCP server.
 | `scaffold_skill` | Plan or create a minimal skill scaffold; dry-run by default. |
 | `workflow_state` | Read `.workflow` and optionally append an explicit log entry. |
 
-The first nine tools are read-only; `run_checks` requires `allow_execute=true`, and
+Ten tools are read-only; `run_checks` requires `allow_execute=true`, and
 `scaffold_skill` / `workflow_state` require `apply=true` before writing. Python 3.8+
 standard library is sufficient; no network access is required.
+
+### Architecture contract
+
+`system_model` reads an optional `.yotta/architecture.json` (version 1) that declares
+layers, dependency rules, boundaries, data ownership, invariants and risk weights. The
+result reports `PASS`, `FAIL` or `UNKNOWN`, lists every unknown that still needs
+evidence, and keeps verification levels that were not executed in `unverified_claims`.
+Schema, glob rules and finding codes: `references/architecture-contract.md`.
 
 ## Install
 
@@ -60,6 +69,7 @@ The engine can also be used without MCP:
 
 ```bash
 python scripts/dev_engine.py repo-map .
+python scripts/dev_engine.py system-model .
 python scripts/dev_engine.py find-code . "helper"
 python scripts/dev_engine.py review-code .
 python scripts/dev_engine.py mcp-doctor
@@ -73,4 +83,6 @@ python scripts/dev_engine.py mcp-doctor
 
 ## Current version
 
-`0.1.0` ships the protocol core and twelve deterministic tools.
+`0.2.0` is in development: it adds `system_model` and the `.yotta/architecture.json`
+contract on top of the twelve deterministic tools. The npm `latest` tag stays `0.1.1`
+until this version is released.

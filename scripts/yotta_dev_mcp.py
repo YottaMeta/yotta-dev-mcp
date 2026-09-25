@@ -6,8 +6,8 @@ Protocol support is dual-era:
   * modern: MCP 2026-07-28, server/discover + per-request _meta
   * legacy: initialize handshake with protocolVersion 2025-11-25
 
-The six tools in this first slice are local, deterministic and read-only:
-repo_map / find_code / compress_output / review_code / review_diff / mcp_doctor.
+Tools are local, deterministic and read-only unless a tool explicitly documents
+an opt-in write or an explicit execution flag.
 """
 
 import json
@@ -55,7 +55,7 @@ def _tool(name, arguments):
 
 TOOL_HANDLERS = {
     name: (lambda arguments, tool_name=name: _tool(tool_name, arguments))
-    for name in ("repo_map", "find_code", "compress_output",
+    for name in ("repo_map", "system_model", "find_code", "compress_output",
                  "review_code", "review_diff", "mcp_doctor",
                  "scan_secrets", "scan_dependencies", "check_publish_readiness",
                  "run_checks", "scaffold_skill", "workflow_state")
@@ -77,6 +77,30 @@ def mcp_tools():
                     "path": {"type": "string", "description": "Repository or source directory"},
                     "max_files": {"type": "integer", "minimum": 1,
                                   "description": "Maximum source files to inspect (default 2000)"},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "system_model",
+            "description": (
+                "Build a deterministic system model (modules, imports, entrypoints, "
+                "tests, configs, data stores) and attach layer data from the "
+                ".yotta/architecture.json contract. Returns PASS, FAIL or UNKNOWN "
+                "plus the unknowns that still need evidence. Read-only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Repository or source directory"},
+                    "max_files": {"type": "integer", "minimum": 1,
+                                  "description": "Maximum source files to inspect (default 2000)"},
+                    "contract_file": {
+                        "type": "string",
+                        "description": "Contract path relative to the repository root "
+                                       "(default .yotta/architecture.json)",
+                    },
                 },
                 "required": ["path"],
                 "additionalProperties": False,

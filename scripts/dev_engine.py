@@ -9,18 +9,21 @@ tool explicitly documents a write.
 
 import argparse
 import ast
+import hashlib
 import json
 import math
 import os
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import dev_contract
 from dev_rules import REVIEW_RULES
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 
 IGNORE_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
@@ -32,6 +35,24 @@ SOURCE_EXTS = {
 }
 TEXT_EXTS = SOURCE_EXTS | {".json", ".md", ".txt", ".yml", ".yaml", ".toml", ".ini", ".cfg"}
 MAX_FILE_BYTES = 2 * 1024 * 1024
+
+JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+CONFIG_NAMES = {
+    "package.json", "package-lock.json", "tsconfig.json", "pyproject.toml",
+    "setup.cfg", "requirements.txt", "requirements-dev.txt", "Cargo.toml",
+    "go.mod", "Makefile", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    ".eslintrc.json", ".eslintrc.js", ".prettierrc", ".prettierrc.json",
+}
+CONFIG_SUFFIXES = (".toml", ".ini", ".cfg", ".yml", ".yaml")
+STORAGE_SUFFIXES = {
+    ".sqlite": "sqlite-file", ".sqlite3": "sqlite-file",
+    ".db": "db-file", ".mdb": "db-file", ".dbf": "db-file",
+}
+TEST_NAME_RE = re.compile(
+    r"(?i)^test_.*\.(py|js|ts|jsx|tsx)$|_test\.py$|\.(test|spec)\.[jt]sx?$"
+)
+UNKNOWN_LIMIT = 50
+EVIDENCE_LIMIT = 100
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 ERROR_RE = re.compile(
@@ -956,9 +977,361 @@ def workflow_state(root, action="read", date=None, text=None, file=None, apply=F
     }
 
 
+def _resolve_relative_module(raw_target, source_rel, module_set, root=None):
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(source_rel), raw_target))
+    if base.startswith("..") or base.startswith("/"):
+        return None, None
+    candidates = [base + ext for ext in JS_EXTS]
+    candidates.extend(base + "/index" + ext for ext in JS_EXTS)
+    candidates.append(base)
+    for candidate in candidates:
+        if candidate in module_set:
+            return candidate, "module"
+    if root is not None and (Path(root) / base).is_file():
+        return base, "file"
+    return None, None
+
+
+def _classify_python_import(raw_target, source_rel, module_set):
+    if raw_target.endswith(".py"):
+        if raw_target in module_set:
+            return "internal", raw_target
+        return "unresolved", raw_target
+    dotted = raw_target.replace(".", "/")
+    source_dir = posixpath.dirname(source_rel)
+    bases = [dotted]
+    if source_dir:
+        bases.insert(0, posixpath.join(source_dir, dotted))
+    for base in bases:
+        for candidate in (base + ".py", base + "/__init__.py"):
+            if candidate in module_set:
+                return "internal", candidate
+    return "external", raw_target
+
+
+def _classify_js_import(raw_target, source_rel, module_set, root=None):
+    if raw_target.startswith("."):
+        resolved, kind = _resolve_relative_module(raw_target, source_rel, module_set, root)
+        if kind == "module":
+            return "internal", resolved
+        if kind == "file":
+            return "internal-file", resolved
+        return "unresolved", raw_target
+    return "external", raw_target
+
+
+def _is_test_file(rel):
+    parts = rel.split("/")
+    if any(part in ("tests", "test", "__tests__", "spec") for part in parts[:-1]):
+        return True
+    return bool(TEST_NAME_RE.match(parts[-1]))
+
+
+def _config_kind(name):
+    suffix = Path(name).suffix.lower()
+    if suffix == ".json":
+        return "json"
+    if suffix == ".toml":
+        return "toml"
+    if suffix in (".yml", ".yaml"):
+        return "yaml"
+    if suffix in (".ini", ".cfg"):
+        return "ini"
+    return "text"
+
+
+def _collect_files_by_suffix(root, suffixes, limit=200):
+    root = Path(root)
+    found = []
+    for current, dirs, files in os.walk(str(root)):
+        dirs[:] = sorted(d for d in dirs if d not in IGNORE_DIRS)
+        for name in sorted(files):
+            path = Path(current) / name
+            if path.is_symlink():
+                continue
+            if path.suffix.lower() in suffixes:
+                found.append(path)
+                if len(found) >= limit:
+                    return found
+    return found
+
+
+def _collect_configs(root, limit=200):
+    root = Path(root)
+    configs = []
+    for current, dirs, files in os.walk(str(root)):
+        dirs[:] = sorted(d for d in dirs if d not in IGNORE_DIRS)
+        for name in sorted(files):
+            path = Path(current) / name
+            if path.is_symlink():
+                continue
+            if name in CONFIG_NAMES or path.suffix.lower() in CONFIG_SUFFIXES:
+                configs.append({"path": _rel(root, path), "kind": _config_kind(name)})
+                if len(configs) >= limit:
+                    return configs
+    return configs
+
+
+def _collect_store_files(root, limit=200):
+    root = Path(root)
+    stores = []
+    for path in _collect_files_by_suffix(root, set(STORAGE_SUFFIXES), limit=limit):
+        stores.append({
+            "path": _rel(root, path),
+            "kind": STORAGE_SUFFIXES[path.suffix.lower()],
+        })
+    return stores
+
+
+def _unverified_claims():
+    return [
+        {
+            "claim": "architecture rules hold for this model",
+            "level": "L1",
+            "status": "UNVERIFIED",
+            "reason": "system_model only builds the model; rule checking runs in architecture_review",
+        },
+        {
+            "claim": "changed code still passes its tests",
+            "level": "L2-L4",
+            "status": "UNVERIFIED",
+            "reason": "system_model executes no tests, mutations or property checks",
+        },
+    ]
+
+
+def system_model(path, max_files=2000, contract_file=None):
+    """Build the system model and attach architecture contract layer data."""
+    root = Path(path)
+    if not root.exists():
+        raise ValueError("路径不存在: %s" % path)
+    if not root.is_dir():
+        raise ValueError("system_model 需要目录: %s" % path)
+    if max_files < 1:
+        raise ValueError("max_files 必须 >= 1")
+
+    contract_result = dev_contract.load_contract(root, contract_file=contract_file)
+    contract = contract_result["contract"]
+    contract_usable = bool(
+        contract_result["present"] and contract_result["ok"] and contract
+    )
+
+    unknowns = []
+    evidence = []
+    if not contract_result["present"]:
+        unknowns.append({
+            "kind": "contract-missing",
+            "id": contract_result["path"],
+            "detail": "no architecture contract found",
+            "next_step": "add %s with layers, rules and data ownership" % contract_result["path"],
+        })
+    elif not contract_result["ok"]:
+        blocking = [item for item in contract_result["findings"]
+                    if item["severity"] in dev_contract.BLOCKING_SEVERITIES]
+        unknowns.append({
+            "kind": "contract-invalid",
+            "id": contract_result["path"],
+            "detail": "%d blocking finding(s); layer data is not applied" % len(blocking),
+            "next_step": "fix the contract findings and rerun system_model",
+        })
+    for finding in contract_result["findings"]:
+        evidence.append({
+            "path": finding["path"],
+            "pointer": finding["pointer"],
+            "detail": "%s: %s" % (finding["severity"], finding["message"]),
+        })
+
+    files = list(_iter_files(root, source_exts(), max_files=max_files + 1))
+    truncated = len(files) > max_files
+    if truncated:
+        files = files[:max_files]
+    module_set = {_rel(root, item) for item in files}
+
+    modules = []
+    imports = []
+    entrypoints = []
+    tests = []
+    for file_path in files:
+        rel = _rel(root, file_path)
+        try:
+            text = _read_text(file_path)
+        except (OSError, ValueError):
+            continue
+        language = _language(file_path)
+        layer = None
+        if contract_usable:
+            matched = dev_contract.match_layers(rel, contract)
+            if not matched:
+                unknowns.append({
+                    "kind": "unassigned-module",
+                    "id": rel,
+                    "detail": "no layer glob matches this module",
+                    "next_step": "add a layer paths glob in %s" % contract_result["path"],
+                })
+            elif len(matched) > 1:
+                layer = matched[0]
+                unknowns.append({
+                    "kind": "layer-overlap",
+                    "id": rel,
+                    "layers": matched,
+                    "detail": "module matches %d layers; first declaration wins" % len(matched),
+                    "next_step": "narrow the overlapping layer globs",
+                })
+            else:
+                layer = matched[0]
+        modules.append({
+            "id": rel,
+            "language": language,
+            "lines": len(text.splitlines()),
+            "layer": layer,
+        })
+        suffix = file_path.suffix.lower()
+        if suffix == ".py":
+            raw_imports = _repo_map_python(file_path, rel)
+            classifier = lambda raw: _classify_python_import(raw, rel, module_set)  # noqa: E731
+        elif suffix in JS_EXTS:
+            raw_imports = _repo_map_js(file_path, rel)
+            classifier = lambda raw: _classify_js_import(raw, rel, module_set, root)  # noqa: E731
+        else:
+            raw_imports = []
+            classifier = None
+        module_imports = []
+        for raw in raw_imports:
+            target_raw = raw["target"]
+            if target_raw == rel:
+                continue
+            kind, target = classifier(target_raw)
+            entry = {
+                "source": rel,
+                "target": target,
+                "kind": kind,
+                "line": raw["line"],
+                "raw": target_raw,
+            }
+            module_imports.append(entry)
+            imports.append(entry)
+            if kind == "unresolved":
+                unknowns.append({
+                    "kind": "unresolved-import",
+                    "id": rel,
+                    "line": raw["line"],
+                    "detail": "relative import does not resolve: %s" % target_raw,
+                    "next_step": "check the import path or add the missing module",
+                })
+                evidence.append({
+                    "path": rel,
+                    "line": raw["line"],
+                    "detail": "unresolved relative import: %s" % target_raw,
+                })
+        if _is_test_file(rel):
+            tests.append({
+                "path": rel,
+                "targets": sorted({item["target"] for item in module_imports
+                                   if item["kind"] == "internal"}),
+            })
+        if (
+            file_path.name in ("main.py", "cli.py", "app.py", "index.js", "index.ts")
+            or "if __name__ == '__main__'" in text
+            or 'if __name__ == "__main__"' in text
+        ):
+            entrypoints.append(rel)
+
+    layer_summaries = []
+    if contract_usable:
+        for layer in contract["layers"]:
+            layer_summaries.append({
+                "id": layer["id"],
+                "title": layer["title"],
+                "risk": layer["risk"],
+                "paths": layer["paths"],
+                "modules": sorted(item["id"] for item in modules
+                                  if item["layer"] == layer["id"]),
+            })
+
+    data_stores = []
+    if contract_usable:
+        for store in contract["data_ownership"]:
+            data_stores.append({
+                "store": store["store"],
+                "owner": store["owner"],
+                "kind": store["kind"] or "unknown",
+                "paths": store["paths"],
+                "owner_modules": sorted(item["id"] for item in modules
+                                        if item["layer"] == store["owner"]),
+                "detected": False,
+            })
+            for store_path in store["paths"]:
+                evidence.append({
+                    "path": store_path,
+                    "detail": "declared data ownership: %s" % store["store"],
+                })
+    for item in _collect_store_files(root):
+        matched = dev_contract.match_layers(item["path"], contract) if contract_usable else []
+        owner = matched[0] if matched else None
+        data_stores.append({
+            "store": item["path"],
+            "owner": owner,
+            "kind": item["kind"],
+            "paths": [item["path"]],
+            "owner_modules": sorted(m["id"] for m in modules if owner and m["layer"] == owner),
+            "detected": True,
+        })
+        evidence.append({
+            "path": item["path"],
+            "detail": "detected local data store file (%s)" % item["kind"],
+        })
+    data_stores.sort(key=lambda item: item["store"])
+
+    model = {
+        "modules": sorted(modules, key=lambda item: item["id"]),
+        "layers": layer_summaries,
+        "imports": sorted(imports, key=lambda item: (item["source"], item["line"], item["target"])),
+        "entrypoints": sorted(set(entrypoints)),
+        "tests": sorted(tests, key=lambda item: item["path"]),
+        "configs": _collect_configs(root),
+        "data_stores": data_stores,
+    }
+    digest = hashlib.sha256(
+        json.dumps(model, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    unknowns.sort(key=lambda item: (item["kind"], item["id"], item.get("line", 0)))
+    unknowns_truncated = len(unknowns) > UNKNOWN_LIMIT
+    evidence.sort(key=lambda item: (item["path"], item.get("line", 0), item["detail"]))
+    if len(evidence) > EVIDENCE_LIMIT:
+        evidence = evidence[:EVIDENCE_LIMIT]
+    if contract_result["present"] and not contract_result["ok"]:
+        status = "FAIL"
+    elif unknowns:
+        status = "UNKNOWN"
+    else:
+        status = "PASS"
+    return {
+        "status": status,
+        "root": str(root.resolve()),
+        "contract": {
+            "path": contract_result["path"],
+            "present": contract_result["present"],
+            "ok": contract_result["ok"],
+            "version": contract_result["version"],
+            "layers": contract_result["layers"],
+            "rules": contract_result["rules"],
+            "findings": contract_result["findings"],
+        },
+        "model": model,
+        "unknowns": unknowns[:UNKNOWN_LIMIT],
+        "unknowns_truncated": unknowns_truncated,
+        "unverified_claims": _unverified_claims(),
+        "evidence": evidence,
+        "truncated": truncated,
+        "model_digest": "sha256:" + digest,
+    }
+
+
 def dispatch(name, arguments):
     handlers = {
         "repo_map": repo_map,
+        "system_model": system_model,
         "find_code": find_code,
         "compress_output": compress_output,
         "review_code": review_code,
@@ -982,6 +1355,9 @@ def main():
     sub = parser.add_subparsers(dest="command")
     repo = sub.add_parser("repo-map")
     repo.add_argument("path")
+    model = sub.add_parser("system-model")
+    model.add_argument("path")
+    model.add_argument("--contract", help="contract path relative to the repository root")
     find = sub.add_parser("find-code")
     find.add_argument("path")
     find.add_argument("query")
@@ -995,6 +1371,8 @@ def main():
     args = parser.parse_args()
     if args.command == "repo-map":
         result = repo_map(args.path)
+    elif args.command == "system-model":
+        result = system_model(args.path, contract_file=args.contract)
     elif args.command == "find-code":
         result = find_code(args.path, args.query)
     elif args.command == "compress-output":

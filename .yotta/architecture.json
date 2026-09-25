@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "project": "yotta-dev-mcp",
+  "layers": [
+    {
+      "id": "engine",
+      "title": "Deterministic engine",
+      "paths": ["scripts/dev_*.py"],
+      "risk": "high"
+    },
+    {
+      "id": "protocol",
+      "title": "MCP protocol layer",
+      "paths": ["scripts/yotta_dev_mcp.py"],
+      "risk": "high"
+    },
+    {
+      "id": "tests",
+      "title": "Contract tests",
+      "paths": ["scripts/test_*.py"],
+      "risk": "low"
+    },
+    {
+      "id": "launcher",
+      "title": "Node launchers",
+      "paths": ["bin/**", "install.sh"],
+      "risk": "medium"
+    }
+  ],
+  "rules": [
+    {
+      "id": "engine-no-launcher",
+      "type": "forbid-dependency",
+      "from": "engine",
+      "to": "launcher",
+      "severity": "high",
+      "claim": "the Python engine never imports a Node launcher"
+    },
+    {
+      "id": "engine-no-tests",
+      "type": "forbid-dependency",
+      "from": "engine",
+      "to": "tests",
+      "severity": "medium",
+      "claim": "the engine never imports its own tests"
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "engine-entry",
+      "layer": "engine",
+      "paths": ["scripts/dev_engine.py"],
+      "visibility": "internal",
+      "description": "single dispatch entry for the engine"
+    }
+  ],
+  "invariants": [
+    {
+      "id": "read-only-by-default",
+      "claim": "every tool is read-only or requires an explicit opt-in flag",
+      "severity": "high",
+      "check": "manual"
+    },
+    {
+      "id": "stdlib-only",
+      "claim": "the engine uses the Python standard library only",
+      "severity": "high",
+      "check": "manual"
+    }
+  ],
+  "risk_weights": {
+    "engine": 3,
+    "protocol": 3,
+    "launcher": 1,
+    "tests": 1
+  }
+}

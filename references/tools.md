@@ -1,6 +1,8 @@
 # Tool contracts
 
-All tools are local, deterministic and read-only in v0.1.0.
+All tools are local and deterministic. Unless a section says otherwise they are
+read-only; `run_checks` requires `allow_execute=true`, and `scaffold_skill` /
+`workflow_state` require `apply=true` before writing.
 
 ## repo_map
 
@@ -10,6 +12,23 @@ Input:
 - `max_files` (optional, default 2000): source file limit.
 
 Output: `root`, `modules`, `imports`, `entrypoints`, `truncated`.
+
+## system_model
+
+Input:
+
+- `path` (required): repository or source directory.
+- `max_files` (optional, default 2000): source file limit.
+- `contract_file` (optional): contract path relative to the repository root
+  (default `.yotta/architecture.json`).
+
+Output: `status` (`PASS` / `FAIL` / `UNKNOWN`), `contract`, `model` (`modules`,
+`layers`, `imports`, `entrypoints`, `tests`, `configs`, `data_stores`),
+`unknowns`, `unknowns_truncated`, `unverified_claims`, `evidence`, `truncated`
+and `model_digest`.
+
+Contract schema, glob rules, finding codes and import kinds are documented in
+`references/architecture-contract.md`.
 
 ## find_code
 

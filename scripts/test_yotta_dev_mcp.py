@@ -76,7 +76,7 @@ class YottaDevMcpTest(unittest.TestCase):
         })
         self.assertEqual(response["result"]["resultType"], "complete")
 
-    def test_tools_list_has_twelve_contracts(self):
+    def test_tools_list_has_thirteen_contracts(self):
         response = server.handle_message({
             "jsonrpc": "2.0",
             "id": 3,
@@ -86,6 +86,7 @@ class YottaDevMcpTest(unittest.TestCase):
         names = [tool["name"] for tool in tools]
         self.assertEqual(names, [
             "repo_map",
+            "system_model",
             "find_code",
             "compress_output",
             "review_code",
@@ -106,6 +107,21 @@ class YottaDevMcpTest(unittest.TestCase):
         response = self.call("repo_map", {"path": str(self.root)})
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertIn("main.py", payload["entrypoints"])
+
+    def test_system_model_tool(self):
+        response = self.call("system_model", {"path": str(self.root)})
+        self.assertFalse(response["result"]["isError"])
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual(payload["status"], "UNKNOWN")
+        self.assertIn("model", payload)
+        self.assertEqual(
+            payload["unknowns"][0]["kind"],
+            "contract-missing",
+        )
+
+    def test_system_model_rejects_missing_path(self):
+        response = self.call("system_model", {"path": str(self.root / "nope")})
+        self.assertTrue(response["result"]["isError"])
 
     def test_find_code_tool(self):
         response = self.call("find_code", {"path": str(self.root), "query": "helper"})
@@ -184,7 +200,7 @@ class YottaDevMcpTest(unittest.TestCase):
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         self.assertEqual(len(lines), 2)
         self.assertEqual(json.loads(lines[0])["result"]["serverInfo"]["name"], "yotta-dev-mcp")
-        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 12)
+        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 13)
 
 
 if __name__ == "__main__":

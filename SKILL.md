@@ -1,7 +1,7 @@
 ---
 name: yotta-dev-mcp
-description: 元开（yotta-dev-mcp）—— 本地、确定性的开发工具 MCP，把只读默认的开发能力暴露为 stdio MCP server：repo_map / find_code / compress_output / review_code / review_diff / mcp_doctor / scan_secrets / scan_dependencies / check_publish_readiness / run_checks / scaffold_skill / workflow_state。触发：让 AI 在陌生项目里先做结构盘点、定位代码、评审改动、扫描密钥/依赖、检查发布就绪、运行白名单检查、生成脚手架或读取 .workflow 状态时；或用户说 元开 / 开发能力 MCP / yotta-dev-mcp / 代码库地图 / 代码评审 MCP 等。边界：Python 3.8+ 标准库、离线默认；除 run_checks（显式 allow_execute）与 scaffold_skill / workflow_state 的显式 apply 外均为只读；不上传源码、不自动修改、不提交、不联网查询包是否存在。
-version: 0.1.1
+description: 元开（yotta-dev-mcp）—— 本地、确定性的开发工具 MCP，把只读默认的开发能力暴露为 stdio MCP server：repo_map / system_model / find_code / compress_output / review_code / review_diff / mcp_doctor / scan_secrets / scan_dependencies / check_publish_readiness / run_checks / scaffold_skill / workflow_state。触发：让 AI 在陌生项目里先做结构盘点、构建系统模型或架构契约（.yotta/architecture.json）、定位代码、评审改动、扫描密钥/依赖、检查发布就绪、运行白名单检查、生成脚手架或读取 .workflow 状态时；或用户说 元开 / 开发能力 MCP / yotta-dev-mcp / 代码库地图 / 系统模型 / 架构契约 / 代码评审 MCP 等。边界：Python 3.8+ 标准库、离线默认；除 run_checks（显式 allow_execute）与 scaffold_skill / workflow_state 的显式 apply 外均为只读；不上传源码、不自动修改、不提交、不联网查询包是否存在。
+version: 0.2.0
 license: MIT
 ---
 
@@ -13,6 +13,7 @@ license: MIT
 ## 何时使用
 
 - 接手陌生项目：先 `repo_map` 看模块、依赖和入口，再 `find_code` 定位。
+- 架构与影响分析：先写 `.yotta/architecture.json`，再用 `system_model` 拿分层、依赖、测试映射与 `UNKNOWN` 清单。
 - 评审改动：`review_diff` 只看新增行；`review_code` 对文件或仓库做规则检查。
 - 长日志 / 长命令输出：`compress_output` 保错误、错误栈和首尾上下文。
 - 本机排查：`mcp_doctor` 只读检查技能目录和 MCP JSON 配置。
@@ -40,6 +41,7 @@ python scripts/yotta_dev_mcp.py
 | 工具 | 用途 | 写入 |
 |---|---|---|
 | `repo_map` | 模块、导入、入口点地图 | 否 |
+| `system_model` | 系统模型：模块、依赖、入口、测试映射、配置与数据归属；附带契约分层，输出 PASS / FAIL / UNKNOWN | 否 |
 | `find_code` | 符号 / 文本定位，结果有上限 | 否 |
 | `compress_output` | 保留错误与首尾的长输出压缩 | 否 |
 | `review_code` | 规则化代码评审，带行号与建议 | 否 |
@@ -52,7 +54,7 @@ python scripts/yotta_dev_mcp.py
 | `scaffold_skill` | 生成最小技能脚手架，默认 dry-run | 仅显式 apply |
 | `workflow_state` | 读取 `.workflow`，可选显式追加日志 | 仅显式 apply |
 
-详细契约见 `references/tools.md`。
+详细契约见 `references/tools.md`；架构契约与 `system_model` 输出见 `references/architecture-contract.md`。
 
 ## 边界
 
@@ -64,4 +66,5 @@ python scripts/yotta_dev_mcp.py
 
 ## 当前版本
 
+- v0.2.0（开发中，尚未发布）：新增 `system_model` 工具与 `.yotta/architecture.json` 架构契约（版本 1）；原 12 个工具行为不变。
 - v0.1.1：品牌显示名统一为「元开」；功能与 12 个工具不变。

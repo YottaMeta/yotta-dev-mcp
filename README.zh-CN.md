@@ -114,8 +114,7 @@ python scripts/dev_engine.py mcp-doctor
 
 ## 当前版本
 
-`0.2.0` 开发中：在原有十二个确定性工具之上新增 `system_model`、
+`0.2.0`（2026-09-25）在原有十二个确定性工具之上新增 `system_model`、
 `architecture_review`、`impact_analysis`、`verify_change`、`self_test`、
 `run_adapter`，以及 `.yotta/architecture.json` 与可选
-`.yotta/verification.json` 契约。
-发布前 npm 的 `latest` 仍为 `0.1.1`。
+`.yotta/verification.json` 契约（版本 1）。

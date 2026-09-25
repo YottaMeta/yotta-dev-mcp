@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 (unreleased)
+## v0.2.0 (2026-09-25)
 
 - 新增 `system_model`：模块、依赖、入口、测试映射、配置与数据归属的确定性系统模型，
   附带 `.yotta/architecture.json` 契约分层。

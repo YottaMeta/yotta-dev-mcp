@@ -70,12 +70,12 @@ python scripts/yotta_dev_mcp.py
 
 - 会执行项目代码的工具默认关闭：`run_checks`、`verify_change` 的 L2-L4 策略检查、`self_test` 的测试子集都必须显式 `allow_execute=true`，且只运行白名单检查或已声明的策略检查。
 - 外部适配器只在用户已安装时接入：`run_adapter` 不安装、不下载、不访问远端、不接收任意命令参数；工具缺失或配置缺失一律返回 `UNKNOWN` 并给出 next_step。
-- `scaffold_skill` / `workflow_state` 默认只预览，显式 `apply=true` 才写入；写入前做原子替换并保留 `.bak`。
+- `scaffold_skill` / `workflow_state` 默认只预览，显式 `apply=true` 才写入；脚手架拒绝覆盖已有非空目录，状态写入使用原子替换并为被覆盖文件保留 `.bak`。
 - 不联网，不查询包是否存在于公共仓库。
 - 不读取或修改 YottaCode 仓库。
 - 结论是确定性静态判断，不替代人工评审与最终决策。
 
 ## 当前版本
 
-- v0.2.0（开发中，尚未发布）：新增 `system_model`、`architecture_review`、`impact_analysis`、`verify_change`、`self_test`、`run_adapter`，以及 `.yotta/architecture.json` 与可选 `.yotta/verification.json` 契约（版本 1）；工具总数 18，原 12 个工具行为不变。
+- v0.2.0（2026-09-25）：新增 `system_model`、`architecture_review`、`impact_analysis`、`verify_change`、`self_test`、`run_adapter`，以及 `.yotta/architecture.json` 与可选 `.yotta/verification.json` 契约（版本 1）；工具总数 18，原 12 个工具行为不变。
 - v0.1.1：品牌显示名统一为「元开」；功能与 12 个工具不变。

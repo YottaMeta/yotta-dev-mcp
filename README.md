@@ -126,8 +126,7 @@ python scripts/dev_engine.py mcp-doctor
 
 ## Current version
 
-`0.2.0` is in development: it adds `system_model`, `architecture_review`,
+`0.2.0` (2026-09-25) adds `system_model`, `architecture_review`,
 `impact_analysis`, `verify_change`, `self_test`, `run_adapter`, and the
 `.yotta/architecture.json` plus optional `.yotta/verification.json` contracts on
-top of the twelve deterministic tools. The npm `latest` tag stays `0.1.1` until
-this version is released.
+top of the twelve deterministic tools.

@@ -76,7 +76,7 @@ class YottaDevMcpTest(unittest.TestCase):
         })
         self.assertEqual(response["result"]["resultType"], "complete")
 
-    def test_tools_list_has_seventeen_contracts(self):
+    def test_tools_list_has_eighteen_contracts(self):
         response = server.handle_message({
             "jsonrpc": "2.0",
             "id": 3,
@@ -91,6 +91,7 @@ class YottaDevMcpTest(unittest.TestCase):
             "impact_analysis",
             "verify_change",
             "self_test",
+            "run_adapter",
             "find_code",
             "compress_output",
             "review_code",
@@ -106,6 +107,41 @@ class YottaDevMcpTest(unittest.TestCase):
         for tool in tools:
             self.assertEqual(tool["inputSchema"]["type"], "object")
             self.assertIs(tool["inputSchema"].get("additionalProperties"), False)
+
+    def test_run_adapter_list_tool(self):
+        response = self.call("run_adapter", {
+            "action": "list",
+            "path": str(self.root),
+        })
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(payload["status"], "PASS")
+        self.assertEqual(
+            [item["id"] for item in payload["adapters"]],
+            ["import-linter", "dependency-cruiser", "repomix"],
+        )
+        self.assertTrue(payload["unknowns"])
+
+    def test_run_adapter_run_without_tool_is_unknown(self):
+        response = self.call("run_adapter", {
+            "action": "run",
+            "path": str(self.root),
+            "adapter": "repomix",
+            "allow_execute": True,
+        })
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(payload["status"], "UNKNOWN")
+        self.assertEqual(payload["reason"], "adapter-not-installed")
+
+    def test_run_adapter_unknown_adapter_is_error(self):
+        response = self.call("run_adapter", {
+            "action": "run",
+            "path": str(self.root),
+            "adapter": "nope",
+            "allow_execute": True,
+        })
+        self.assertTrue(response["result"]["isError"])
 
     def test_repo_map_tool(self):
         response = self.call("repo_map", {"path": str(self.root)})
@@ -302,7 +338,7 @@ class YottaDevMcpTest(unittest.TestCase):
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         self.assertEqual(len(lines), 2)
         self.assertEqual(json.loads(lines[0])["result"]["serverInfo"]["name"], "yotta-dev-mcp")
-        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 17)
+        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 18)
 
 
 if __name__ == "__main__":

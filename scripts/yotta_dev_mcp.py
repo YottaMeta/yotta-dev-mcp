@@ -56,7 +56,7 @@ def _tool(name, arguments):
 TOOL_HANDLERS = {
     name: (lambda arguments, tool_name=name: _tool(tool_name, arguments))
     for name in ("repo_map", "system_model", "architecture_review", "impact_analysis",
-                 "verify_change", "self_test", "find_code", "compress_output",
+                 "verify_change", "self_test", "run_adapter", "find_code", "compress_output",
                  "review_code", "review_diff", "mcp_doctor",
                  "scan_secrets", "scan_dependencies", "check_publish_readiness",
                  "run_checks", "scaffold_skill", "workflow_state")
@@ -249,6 +249,61 @@ def mcp_tools():
                                 "description": "Test timeout in seconds (default 120)"},
                 },
                 "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "run_adapter",
+            "description": (
+                "Probe or explicitly run an optional local architecture adapter. "
+                "action=list only inspects project-local node_modules/.bin, venv and "
+                "PATH for import-linter, dependency-cruiser and Repomix; action=run "
+                "requires allow_execute=true. The adapter never installs packages, "
+                "downloads files or accepts arbitrary argv. Missing tools or configs "
+                "return UNKNOWN with the next step."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "run"],
+                        "description": "list probes capability; run executes one adapter",
+                    },
+                    "path": {"type": "string", "description": "Repository root"},
+                    "adapter": {
+                        "type": "string",
+                        "enum": ["import-linter", "dependency-cruiser", "repomix"],
+                        "description": "Adapter id; required when action=run",
+                    },
+                    "allow_execute": {
+                        "type": "boolean",
+                        "description": "Must be true to run an adapter; default false",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 600,
+                        "description": "Adapter timeout in seconds (default 120)",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "minimum": 1000,
+                        "maximum": 1000000,
+                        "description": "Repomix output cap in characters (default 120000)",
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500000,
+                        "description": "Optional Repomix token budget",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Repository-relative adapter target (default .)",
+                    },
+                },
+                "required": ["action", "path"],
                 "additionalProperties": False,
             },
         },
@@ -510,9 +565,10 @@ def handle_message(msg):
                         "review_code for focused review, compress_output for long logs and "
                         "mcp_doctor for local configuration checks. Use system_model and "
                         "architecture_review for architecture contracts, impact_analysis and "
-                        "verify_change for change-centered evidence, and self_test for "
-                        "integrity checks. Tools are offline and read-only unless an explicit "
-                        "write or execute flag is set."
+                        "verify_change for change-centered evidence, self_test for integrity "
+                        "checks, and run_adapter to probe or explicitly run optional local "
+                        "architecture adapters. Tools are offline and read-only unless an "
+                        "explicit write or execute flag is set."
                     ),
                 }, (3600000, "public")),
             }

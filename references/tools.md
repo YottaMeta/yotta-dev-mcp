@@ -1,7 +1,8 @@
 # Tool contracts
 
 All tools are local and deterministic. Unless a section says otherwise they are
-read-only; `run_checks` requires `allow_execute=true`, and `scaffold_skill` /
+read-only; `run_checks`, `verify_change` and `run_adapter` require
+`allow_execute=true` for their explicit execution paths, and `scaffold_skill` /
 `workflow_state` require `apply=true` before writing.
 
 ## repo_map
@@ -127,6 +128,34 @@ dependency must be `FAIL`, removing the rule must stop the failure, an invalid
 contract must be `FAIL` or `UNKNOWN`, a missing contract must be `UNKNOWN`, a seeded
 credential must be found, and a seeded version mismatch must fail readiness. These
 probes prove the verifier is not a rubber stamp.
+
+## run_adapter
+
+Input:
+
+- `action` (required): `list` probes optional adapters without executing them;
+  `run` executes exactly one adapter.
+- `path` (required): repository root.
+- `adapter` (required when `action=run`): `import-linter`,
+  `dependency-cruiser` or `repomix`.
+- `allow_execute` (optional, default false): required for `action=run`.
+- `timeout` (optional, default 120, 1-600).
+- `max_chars` (optional, default 120000, 1000-1000000): Repomix output cap.
+- `token_budget` (optional): Repomix token budget; over-budget output fails.
+- `target` (optional, default `.`): repository-relative adapter target.
+
+`action=list` returns `status`, `adapters` with `available` / `ready` /
+`executable` / `executable_source` / `config` / `reason`, plus `unknowns`.
+
+`action=run` returns `status` (`PASS` / `FAIL` / `UNKNOWN`), the selected
+`adapter` metadata, a fixed `command` record with `output_hash`, normalized
+`findings`, Repomix `content` metadata when applicable, `next_step` and
+`unknowns`. Missing tools, missing configs, invalid output and timeouts are
+`UNKNOWN`, never silent passes.
+
+Adapters are optional enhancements: no package is installed or downloaded, no
+arbitrary argv is accepted, and adapter findings do not silently change the
+status of the core architecture tools. See `references/adapters.md`.
 
 ## find_code
 

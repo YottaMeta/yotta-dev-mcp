@@ -251,4 +251,6 @@ python scripts/dev_engine.py impact-analysis . --symbol save
 python scripts/dev_engine.py verify-change . --changed src/core/store.py
 python scripts/dev_engine.py verify-change . --changed src/core/store.py --level L2 --allow-execute
 python scripts/dev_engine.py self-test .
+python scripts/dev_engine.py adapter . --action list
+python scripts/dev_engine.py adapter . --action run --adapter import-linter --allow-execute
 ```

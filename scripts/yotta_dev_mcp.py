@@ -386,14 +386,24 @@ def mcp_tools():
         {
             "name": "mcp_doctor",
             "description": (
-                "Inspect installed skills and MCP JSON configuration files for "
-                "versions and obvious configuration issues. Read-only."
+                "Broad, read-only health check for installed skills and MCP client "
+                "configuration. Discovers Codex, Cursor, WorkBuddy, OpenCode, Claude "
+                "Code and other known hosts (plus project-level configs), parses JSON, "
+                "JSONC and a narrow TOML subset, and always returns a coverage report "
+                "with checked / missing / unsupported / unverified hosts. Only server "
+                "names are returned; commands, args and env values are never included. "
+                "A clean result applies only to the covered scope: read coverage and "
+                "coverage_confidence before treating it as all-clear."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "skills_dirs": {"type": "array", "items": {"type": "string"}},
                     "config_paths": {"type": "array", "items": {"type": "string"}},
+                    "include_defaults": {
+                        "type": "boolean",
+                        "description": "Also scan the built-in host registry when config_paths is supplied",
+                    },
                 },
                 "additionalProperties": False,
             },

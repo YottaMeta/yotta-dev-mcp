@@ -108,6 +108,11 @@ class YottaDevMcpTest(unittest.TestCase):
             self.assertEqual(tool["inputSchema"]["type"], "object")
             self.assertIs(tool["inputSchema"].get("additionalProperties"), False)
 
+    def test_mcp_doctor_schema_advertises_coverage_and_include_defaults(self):
+        doctor = next(tool for tool in server.mcp_tools() if tool["name"] == "mcp_doctor")
+        self.assertIn("coverage", doctor["description"].lower())
+        self.assertIn("include_defaults", doctor["inputSchema"]["properties"])
+
     def test_run_adapter_list_tool(self):
         response = self.call("run_adapter", {
             "action": "list",

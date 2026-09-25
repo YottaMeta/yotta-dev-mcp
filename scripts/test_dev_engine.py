@@ -154,6 +154,25 @@ class DevEngineTest(unittest.TestCase):
         self.assertIn(("pkg/core.py", "os"), pairs)
         self.assertIn(("pkg/core.py", "pkg/util.py"), pairs)
 
+    def test_repo_map_resolves_from_dot_import_aliases(self):
+        (self.root / "pkg" / "a.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (self.root / "pkg" / "b.py").write_text("VALUE = 2\n", encoding="utf-8")
+        (self.root / "pkg" / "subpkg").mkdir()
+        (self.root / "pkg" / "subpkg" / "__init__.py").write_text("", encoding="utf-8")
+        (self.root / "pkg" / "consumer.py").write_text(
+            "from . import a, b\n"
+            "from . import b as bb\n"
+            "from . import subpkg\n"
+            "from .a import VALUE\n",
+            encoding="utf-8",
+        )
+        result = dev_engine.repo_map(str(self.root))
+        pairs = {(item["source"], item["target"]) for item in result["imports"]}
+        self.assertIn(("pkg/consumer.py", "pkg/a.py"), pairs)
+        self.assertIn(("pkg/consumer.py", "pkg/b.py"), pairs)
+        self.assertIn(("pkg/consumer.py", "pkg/subpkg/__init__.py"), pairs)
+        self.assertNotIn(("pkg/consumer.py", "pkg.py"), pairs)
+
     def test_find_code_classifies_definition_and_reference(self):
         result = dev_engine.find_code(str(self.root), "helper")
         kinds = {item["kind"] for item in result["matches"]}
@@ -209,6 +228,31 @@ class DevEngineTest(unittest.TestCase):
         )
         result = dev_engine.review_code(str(clean))
         self.assertEqual(result["findings"], [])
+
+    def test_review_code_ignores_workflow_scratch_and_probe_dirs(self):
+        write_tree(self.root, {
+            "src/app.py": "print('real')\n",
+            ".workflow/scratch/_probe_a.py": "print('scratch')\n",
+            "_probe/b.py": "print('probe')\n",
+            "scratch/c.py": "print('scratch dir')\n",
+        })
+        result = dev_engine.review_code(str(self.root))
+        paths = {item["path"] for item in result["findings"]}
+        self.assertEqual(paths, {"src/app.py"})
+
+    def test_repo_map_ignores_workflow_scratch_and_probe_dirs(self):
+        write_tree(self.root, {
+            "src/app.py": "VALUE = 1\n",
+            ".workflow/scratch/_probe_a.py": "print('scratch')\n",
+            "_probe/b.py": "print('probe')\n",
+            "scratch/c.py": "print('scratch dir')\n",
+        })
+        result = dev_engine.repo_map(str(self.root))
+        paths = {item["path"] for item in result["modules"]}
+        self.assertIn("src/app.py", paths)
+        self.assertFalse(any(path.startswith(".workflow/") for path in paths))
+        self.assertFalse(any(path.startswith("_probe/") for path in paths))
+        self.assertFalse(any(path.startswith("scratch/") for path in paths))
 
     def test_review_diff_only_reviews_added_lines(self):
         diff_text = (
@@ -278,6 +322,24 @@ class DevEngineTest(unittest.TestCase):
         for item in result["findings"]:
             self.assertNotIn("test-only-placeholder-value", item["evidence"])
             self.assertIn("REDACTED", item["evidence"])
+
+    def test_scan_secrets_ignores_paths_hashes_and_filenames(self):
+        text = "\n".join([
+            'PATH = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"',
+            'SHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"',
+            'FILE = "very-long-file-name-with-many-words-1234567890.py"',
+            'URL = "file:///D:/AI_WorkDir/%E9%A1%B9%E7%9B%AE/index.html"',
+            'URL_LONG = "file:///D:/AI_WorkDir/%E9%A1%B9%E7%9B%AE/ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890.html"',
+            'WHEEL = "sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"',
+        ])
+        result = dev_engine.scan_secrets(text=text)
+        self.assertEqual(result["findings"], [])
+
+    def test_scan_secrets_keeps_real_high_entropy_token(self):
+        token = "Q7vN2mK9pL4xR8sT1uW6yA3bC5dE0fG2hJ7kM9nP"
+        result = dev_engine.scan_secrets(text='VALUE = "%s"\n' % token)
+        rules = {item["rule"] for item in result["findings"]}
+        self.assertIn("high-entropy-token", rules)
 
     def test_scan_dependencies_reports_lockfile_and_unpinned(self):
         (self.root / "package.json").write_text(
@@ -1403,6 +1465,30 @@ class SelfTestTest(unittest.TestCase):
         self.assertEqual(result["mode"], "installed")
         self.assertEqual(self.check(result, "files")["status"], "PASS")
         self.assertEqual(self.check(result, "skill-version")["status"], "PASS")
+
+    def test_self_test_installed_lean_shape_does_not_require_banner(self):
+        target = self.root / "lean-installed"
+        target.mkdir()
+        (target / "SKILL.md").write_text(
+            "---\nname: yotta-dev-mcp\nversion: 0.2.0\n---\n# 元开\n",
+            encoding="utf-8",
+        )
+        (target / "_icon.png").write_bytes(b"icon")
+        result = dev_engine.self_test(str(target), mode="installed")
+        self.assertEqual(self.check(result, "files")["status"], "PASS")
+        self.assertEqual(result["status"], "PASS", result["checks"])
+
+    def test_self_test_installed_non_lean_still_requires_banner(self):
+        target = self.root / "npm-installed"
+        target.mkdir()
+        (target / "SKILL.md").write_text(
+            "---\nname: yotta-dev-mcp\nversion: 0.2.0\n---\n# 元开\n",
+            encoding="utf-8",
+        )
+        result = dev_engine.self_test(str(target), mode="installed")
+        entry = self.check(result, "files")
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertIn("assets/banner.png", {item["path"] for item in entry["evidence"]})
 
     def test_self_test_auto_mode_uses_source_when_scripts_exist(self):
         target = self.copy_source_repo()

@@ -26,12 +26,22 @@ from dev_common import (
     _frontmatter_name, _frontmatter_version, source_exts,
 )
 from dev_impact import impact_analysis as _impact_analysis_impl
+from dev_mcp_doctor import (
+    default_config_paths as _default_config_paths_impl,
+    default_skill_dirs as _default_skill_dirs_impl,
+    mcp_doctor as _mcp_doctor_impl,
+)
 from dev_verify import verify_change as _verify_change_impl
 from dev_selftest import self_test
-from dev_model import _repo_map_js, _repo_map_python, system_model as _system_model_impl
+from dev_model import (
+    _classify_python_import,
+    _repo_map_js,
+    _repo_map_python,
+    system_model as _system_model_impl,
+)
 from dev_rules import REVIEW_RULES
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 
 
@@ -54,6 +64,7 @@ def repo_map(path, max_files=2000):
     if len(files) > max_files:
         truncated = True
         files = files[:max_files]
+    module_set = {_rel(root, file_path) for file_path in files}
     for file_path in files:
         rel = _rel(root, file_path)
         try:
@@ -63,7 +74,11 @@ def repo_map(path, max_files=2000):
         language = _language(file_path)
         modules.append({"path": rel, "language": language, "lines": len(text.splitlines())})
         if file_path.suffix.lower() == ".py":
-            imports.extend(_repo_map_python(file_path, rel))
+            for raw in _repo_map_python(file_path, rel):
+                _, target = _classify_python_import(
+                    raw["target"], rel, module_set, relative=raw.get("relative", False)
+                )
+                imports.append({"source": rel, "target": target, "line": raw["line"]})
         elif file_path.suffix.lower() in (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"):
             imports.extend(_repo_map_js(file_path, rel))
         if (
@@ -274,81 +289,19 @@ def review_diff(diff_text=None, path=None, base=None, max_findings=200):
 
 
 def _default_skill_dirs():
-    home = Path.home()
-    candidates = [
-        home / ".codex" / "skills",
-        home / ".claude" / "skills",
-        home / ".cursor" / "skills",
-        home / ".config" / "opencode" / "skills",
-    ]
-    codex_home = os.environ.get("CODEX_HOME")
-    if codex_home:
-        candidates.insert(0, Path(codex_home) / "skills")
-    claude_home = os.environ.get("CLAUDE_CONFIG_DIR")
-    if claude_home:
-        candidates.insert(0, Path(claude_home) / "skills")
-    xdg_home = os.environ.get("XDG_CONFIG_HOME")
-    if xdg_home:
-        candidates.insert(0, Path(xdg_home) / "opencode" / "skills")
-    return candidates
+    return _default_skill_dirs_impl()
 
 
 def _default_config_paths():
-    home = Path.home()
-    return [
-        home / ".codex" / "config.json",
-        home / ".codex" / "mcp.json",
-        home / ".config" / "opencode" / "opencode.json",
-        home / ".claude" / "settings.json",
-        home / ".cursor" / "mcp.json",
-    ]
+    return _default_config_paths_impl()
 
 
-def mcp_doctor(skills_dirs=None, config_paths=None):
-    skills = []
-    issues = []
-    for directory in (skills_dirs or _default_skill_dirs()):
-        root = Path(directory)
-        if not root.is_dir():
-            continue
-        for child in sorted(root.iterdir(), key=lambda item: item.name):
-            skill_file = child / "SKILL.md"
-            if not child.is_dir() or not skill_file.is_file():
-                continue
-            try:
-                text = _read_text(skill_file)
-            except (OSError, ValueError) as exc:
-                issues.append("%s: %s" % (skill_file, exc))
-                continue
-            skills.append({
-                "name": _frontmatter_name(text) or child.name,
-                "version": _frontmatter_version(text),
-                "path": str(skill_file),
-            })
-    mcp_configs = []
-    for config_path in (config_paths or _default_config_paths()):
-        path = Path(config_path)
-        if not path.is_file():
-            continue
-        try:
-            payload = json.loads(_read_text(path))
-        except Exception as exc:  # noqa: BLE001
-            issues.append("%s: %s" % (path, exc))
-            continue
-        servers = payload.get("mcpServers") if isinstance(payload, dict) else None
-        mcp_configs.append({
-            "path": str(path),
-            "servers": sorted(servers.keys()) if isinstance(servers, dict) else [],
-        })
-    skills.sort(key=lambda item: (item["name"], item["path"]))
-    mcp_configs.sort(key=lambda item: item["path"])
-    return {
-        "skills": skills,
-        "mcp_configs": mcp_configs,
-        "issues": issues,
-        "checked_skills": len(skills),
-        "checked_configs": len(mcp_configs),
-    }
+def mcp_doctor(skills_dirs=None, config_paths=None, include_defaults=None):
+    return _mcp_doctor_impl(
+        skills_dirs=skills_dirs,
+        config_paths=config_paths,
+        include_defaults=include_defaults,
+    )
 
 
 SECRET_KEY_RE = re.compile(
@@ -357,6 +310,35 @@ SECRET_KEY_RE = re.compile(
 AWS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 HIGH_ENTROPY_RE = re.compile(r"[A-Za-z0-9_+/=\-]{32,}")
+HASH_CONTEXT_RE = re.compile(r"(?i)(sha1|sha256|sha512|hash|checksum|digest|integrity)")
+HEX_TOKEN_RE = re.compile(r"^[0-9a-fA-F]+$")
+PATH_HINT_RE = re.compile(r"(?i)(?:[a-z]:[\\/]|\\\\|https?://|file://)")
+URL_HINT_RE = re.compile(r"(?i)(?:file|https?)://")
+PERCENT_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+HASH_PREFIX_RE = re.compile(r"(?i)^(?:sha1|sha256|sha512|md5)[=:]([0-9a-fA-F]{32,128})$")
+FILE_SUFFIX_RE = re.compile(
+    r"(?i)\.(exe|dll|sys|py|js|ts|tsx|json|md|txt|log|whl|tar|gz|zip|png|jpg|jpeg|svg)"
+)
+
+
+def _high_entropy_noise(line, token, start, end):
+    """Return True for common non-secret high-entropy noise."""
+    if HASH_PREFIX_RE.match(token):
+        return True
+    if PERCENT_ESCAPE_RE.search(token) and URL_HINT_RE.search(line):
+        return True
+    if start > 0 and line[start - 1] == "%":
+        return True
+    if HEX_TOKEN_RE.match(token) and len(token) in (32, 40, 64, 128) and HASH_CONTEXT_RE.search(line):
+        return True
+    window = line[max(0, start - 16):min(len(line), end + 16)]
+    if PATH_HINT_RE.search(window):
+        return True
+    if URL_HINT_RE.search(line) and PERCENT_ESCAPE_RE.search(window):
+        return True
+    if FILE_SUFFIX_RE.match(line[end:end + 8]):
+        return True
+    return False
 
 
 def _entropy(value):
@@ -385,7 +367,9 @@ def scan_secrets(path=None, text=None, max_findings=200, include_git_history=Fal
         root = Path(path)
         if not root.exists():
             raise ValueError("路径不存在: %s" % path)
-        files = [root] if root.is_file() else list(_iter_files(root, all_files=True))
+        files = [root] if root.is_file() else list(
+            _iter_files(root, all_files=True, ignore_temp=False)
+        )
         base = root.parent if root.is_file() else root
         for file_path in files:
             try:
@@ -421,7 +405,11 @@ def scan_secrets(path=None, text=None, max_findings=200, include_git_history=Fal
                 })
             for match in HIGH_ENTROPY_RE.finditer(line):
                 token = match.group(0)
-                if _entropy(token) >= 4.0 and not PRIVATE_KEY_RE.search(line):
+                if (
+                    _entropy(token) >= 4.0
+                    and not PRIVATE_KEY_RE.search(line)
+                    and not _high_entropy_noise(line, token, match.start(), match.end())
+                ):
                     findings.append({
                         "path": rel, "line": line_no, "rule": "high-entropy-token",
                         "severity": "medium", "evidence": _redact(token),
@@ -1083,6 +1071,8 @@ def main():
     doctor = sub.add_parser("mcp-doctor")
     doctor.add_argument("--skills-dir", action="append")
     doctor.add_argument("--config", action="append")
+    doctor.add_argument("--include-defaults", action="store_true",
+                        help="scan built-in host registry in addition to --config paths")
     args = parser.parse_args()
     if args.command == "repo-map":
         result = repo_map(args.path)
@@ -1126,7 +1116,11 @@ def main():
     elif args.command == "review-code":
         result = review_code(args.path)
     elif args.command == "mcp-doctor":
-        result = mcp_doctor(skills_dirs=args.skills_dir, config_paths=args.config)
+        result = mcp_doctor(
+            skills_dirs=args.skills_dir,
+            config_paths=args.config,
+            include_defaults=args.include_defaults,
+        )
     else:
         parser.print_help()
         return 2

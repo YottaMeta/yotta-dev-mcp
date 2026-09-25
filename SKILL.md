@@ -1,7 +1,7 @@
 ---
 name: yotta-dev-mcp
 description: 元开（yotta-dev-mcp）—— 本地、确定性的开发工具 MCP，把只读默认的开发能力暴露为 stdio MCP server：repo_map / system_model / architecture_review / impact_analysis / verify_change / self_test / run_adapter / find_code / compress_output / review_code / review_diff / mcp_doctor / scan_secrets / scan_dependencies / check_publish_readiness / run_checks / scaffold_skill / workflow_state。触发：让 AI 在陌生项目里先做结构盘点、构建系统模型或架构契约（.yotta/architecture.json）、按契约评审架构、分析改动影响锥与回归面、按验证阶梯产出证据账本、对元开自身做完整性 / 反证自测、探测或显式运行 import-linter / dependency-cruiser / Repomix 可选适配器、定位代码、评审改动、扫描密钥/依赖、检查发布就绪、运行白名单检查、生成脚手架或读取 .workflow 状态时；或用户说 元开 / 开发能力 MCP / yotta-dev-mcp / 代码库地图 / 系统模型 / 架构契约 / 架构评审 / 影响分析 / 验证账本 / 反证自测 / 代码评审 MCP / 适配器 等。边界：Python 3.8+ 标准库、离线默认；除 run_checks（显式 allow_execute）、verify_change 的 L2-L4 策略检查（显式 allow_execute）与 self_test 的测试子集（显式 allow_execute）、run_adapter 的 action=run（显式 allow_execute）、scaffold_skill / workflow_state 的显式 apply 外均为只读；不上传源码、不自动修改、不提交、不联网查询包是否存在、不自动安装或下载适配器。
-version: 0.2.0
+version: 0.2.1
 license: MIT
 ---
 
@@ -45,7 +45,7 @@ python scripts/yotta_dev_mcp.py
 
 | 工具 | 用途 | 写入 |
 |---|---|---|
-| `repo_map` | 模块、导入、入口点地图 | 否 |
+| `repo_map` | 模块、导入、入口点地图；支持 `from . import X` / 别名 / 包，忽略临时与探针目录 | 否 |
 | `system_model` | 系统模型：模块、依赖、入口、测试映射、配置与数据归属；附带契约分层，输出 PASS / FAIL / UNKNOWN | 否 |
 | `architecture_review` | 按契约评审依赖规则、边界可见性与数据归属；critical / high 判 FAIL，medium / low 只告警 | 否 |
 | `impact_analysis` | 变更影响锥：直接消费者、受影响层 / 边界 / 存储 / 不变量、映射测试、风险分级与回滚探针 | 否 |
@@ -54,10 +54,10 @@ python scripts/yotta_dev_mcp.py
 | `run_adapter` | 探测或显式运行 import-linter / dependency-cruiser / Repomix；固定 argv、项目内 cwd、有界输出与哈希 | 仅 action=run + 显式 allow_execute |
 | `find_code` | 符号 / 文本定位，结果有上限 | 否 |
 | `compress_output` | 保留错误与首尾的长输出压缩 | 否 |
-| `review_code` | 规则化代码评审，带行号与建议 | 否 |
+| `review_code` | 规则化代码评审，带行号与建议；忽略 `.workflow` / `scratch` / `_probe` 等临时目录 | 否 |
 | `review_diff` | 只评审 diff 的新增行 | 否 |
-| `mcp_doctor` | 技能版本与 MCP JSON 配置体检 | 否 |
-| `scan_secrets` | 密钥 / 凭据 / 高熵令牌扫描（强制脱敏） | 否 |
+| `mcp_doctor` | 技能版本与多宿主 MCP 配置体检；返回 coverage，只列 server 名，不含 command / env | 否 |
+| `scan_secrets` | 密钥 / 凭据 / 高熵令牌扫描（强制脱敏；路径 / 哈希 / 文件名噪声过滤） | 否 |
 | `scan_dependencies` | 依赖清单、lockfile、来源与 typosquat 启发式检查 | 否 |
 | `check_publish_readiness` | 版本四件、发布文件、仓库与 publishConfig 检查 | 否 |
 | `run_checks` | 白名单测试 / lint / compile 并返回结构化摘要 | 仅显式 allow_execute |
@@ -77,5 +77,6 @@ python scripts/yotta_dev_mcp.py
 
 ## 当前版本
 
+- v0.2.1（2026-09-25）：缺陷修复批次——`mcp_doctor` 改为多宿主 / 多根 / JSON+JSONC+TOML 子集发现并返回 coverage；`self_test(mode="installed")` 按精简分发副本 / npm / plugin / r0 形态判断 banner；`repo_map` 修复 `from . import X` 解析；`scan_secrets` 过滤路径 / 哈希 / 文件名噪声；`review_code` / `repo_map` 忽略 `.workflow` / `scratch` / `_probe` 等临时目录。
 - v0.2.0（2026-09-25）：新增 `system_model`、`architecture_review`、`impact_analysis`、`verify_change`、`self_test`、`run_adapter`，以及 `.yotta/architecture.json` 与可选 `.yotta/verification.json` 契约（版本 1）；工具总数 18，原 12 个工具行为不变。
 - v0.1.1：品牌显示名统一为「元开」；功能与 12 个工具不变。

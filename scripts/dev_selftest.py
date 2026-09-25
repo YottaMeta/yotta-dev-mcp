@@ -15,7 +15,8 @@ from pathlib import Path
 
 from dev_architecture import architecture_review
 from dev_common import (
-    EVIDENCE_LIMIT, VERIFY_REQUIRED_INSTALLED_FILES,
+    EVIDENCE_LIMIT, LEAN_INSTALL_MARKERS, VERIFY_REQUIRED_INSTALLED_ASSETS,
+    VERIFY_REQUIRED_INSTALLED_FILES,
     VERIFY_REQUIRED_SOURCE_FILES, VERIFY_WRITE_GATES, _frontmatter_version,
     _read_text,
 )
@@ -43,6 +44,9 @@ def _function_default(source_text, function_name, parameter_name):
 
 def _string_constant(node):
     return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+def _is_lean_install(root):
+    return any((root / marker).is_file() for marker in LEAN_INSTALL_MARKERS)
 
 def _protocol_tool_contracts(source_text):
     tree = ast.parse(source_text)
@@ -380,8 +384,14 @@ def self_test(path, mode="auto", allow_execute=False, timeout=120):
         else:
             mode = "source"
 
-    required = (VERIFY_REQUIRED_SOURCE_FILES if mode == "source"
-                else VERIFY_REQUIRED_INSTALLED_FILES)
+    if mode == "source":
+        required = list(VERIFY_REQUIRED_SOURCE_FILES)
+    else:
+        required = list(VERIFY_REQUIRED_INSTALLED_FILES)
+        # Lean distribution strips assets/ by platform policy; only require
+        # the banner when the copy is not lean or it already ships assets/.
+        if not _is_lean_install(root) or (root / "assets").is_dir():
+            required.extend(VERIFY_REQUIRED_INSTALLED_ASSETS)
     missing = [rel for rel in required if not (root / rel).is_file()]
     files_check = {
         "id": "files",

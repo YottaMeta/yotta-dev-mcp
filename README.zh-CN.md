@@ -114,6 +114,11 @@ python scripts/dev_engine.py mcp-doctor
 
 ## 当前版本
 
+`0.2.1`（2026-09-25）是缺陷修复批次：`mcp_doctor` 覆盖 Codex / WorkBuddy /
+OpenCode / Cursor 等宿主并返回 coverage；`self_test(mode="installed")`
+按分发形态判断 banner；`repo_map` 修复 `from . import X`；`scan_secrets`
+过滤路径 / 哈希 / 文件名噪声；`review_code` 忽略临时目录。
+
 `0.2.0`（2026-09-25）在原有十二个确定性工具之上新增 `system_model`、
 `architecture_review`、`impact_analysis`、`verify_change`、`self_test`、
 `run_adapter`，以及 `.yotta/architecture.json` 与可选

@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.2.1 (2026-09-25)
+
+**缺陷修复批次（LedgerHouse 实测 + 元开自审）**
+
+- `mcp_doctor` 改为统一发现层：多宿主注册表（Codex / Cursor / WorkBuddy /
+  OpenCode / Claude Code / Windsurf / Continue / Gemini / Qwen / Trae /
+  Comate / CodeBuddy / Kimi / Kiro / VS Code / Zed 等）、环境根
+  （`CODEX_HOME` / `XDG_CONFIG_HOME` / `CLAUDE_CONFIG_DIR` / `USERPROFILE` /
+  `HOME`）、JSON / JSONC / TOML 关键字子集、`mcpServers` / `mcp` /
+  `[mcp_servers]` 规范化；输出新增 `coverage` / `coverage_gaps` /
+  `unknown_hosts` / `coverage_confidence`，只返回 server 名，不返回值 /
+  command / env；显式 `config_paths` 仍可单独使用，`include_defaults` 可叠加默认扫描。
+- `self_test(mode="installed")` 按分发形态判断必需文件：精简分发副本
+  （`_icon.png`）不要求被平台排除的 `assets/banner.png`；
+  npm / plugin / r0 副本仍要求 banner；精简副本若自带 `assets/` 也仍要求 banner。
+- `repo_map` 修复 `from . import a, b` / `from . import b as bb`：逐 alias
+  返回包内子模块，交给统一分类器解析为 `.py` 或 `/__init__.py`，不再生成
+  不存在的 `<包目录>.py`。
+- `scan_secrets` 增加窄上下文过滤：Windows / UNC / POSIX 绝对路径、URL /
+  `file://` 百分号编码路径、常见二进制 / 源码 / 文档后缀、带 `sha*` / hash /
+  checksum / digest / integrity 上下文的 32/40/64/128 位十六进制；
+  `api-key` / token / AWS / 私钥规则不放宽，真随机高熵 token 仍会命中。
+- `review_code` / `repo_map` 共用忽略规则：新增 `.workflow` / `.codex` /
+  `.cursor` / `.claude` / `.agents` / `scratch` / `_probe` / `probe` /
+  `sandbox` / `debug` 等目录与 `probe_*` / `_probe_*` / `scratch_*` /
+  `tmp_*` / `temp_*` / `*_tmp` 文件名兜底；`scan_secrets` 仍扫描全部文件，
+  避免漏掉临时文件中的真实凭据。
+- 回归：新增 `test_mcp_doctor.py` 13 项 + self_test / repo_map /
+  scan_secrets / review_code 形态与精度测试；元开全量 182/182（1 skip）。
+
 ## v0.2.0 (2026-09-25)
 
 - 新增 `system_model`：模块、依赖、入口、测试映射、配置与数据归属的确定性系统模型，

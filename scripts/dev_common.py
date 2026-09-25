@@ -10,7 +10,14 @@ from pathlib import Path
 IGNORE_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
     "dist", "build", ".next", ".nuxt", ".cache", ".tmp", ".tmp2",
+    ".workflow", ".codex", ".cursor", ".claude", ".agents",
+    "scratch", "_scratch", "_probe", "probe", "probes",
+    "sandbox", ".sandbox", "debug", "_debug",
 }
+IGNORE_TEMP_FILE_RE = re.compile(
+    r"(?i)^(?:probe[_-].*|_probe[_-].*|scratch[_-].*|_scratch[_-].*|tmp_.*|temp_.*|.*_tmp)"
+    r"\.(?:py|js|jsx|mjs|cjs|ts|tsx|sh|ps1|go|rs|java|kt|kts|rb|php)$"
+)
 SOURCE_EXTS = {
     ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".sh", ".ps1",
     ".go", ".rs", ".java", ".kt", ".kts", ".rb", ".php",
@@ -54,7 +61,9 @@ VERIFY_REQUIRED_SOURCE_FILES = (
     "references/tools.md", "references/adapters.md",
     "references/architecture-contract.md", "assets/banner.png",
 )
-VERIFY_REQUIRED_INSTALLED_FILES = ("SKILL.md", "assets/banner.png")
+VERIFY_REQUIRED_INSTALLED_FILES = ("SKILL.md",)
+VERIFY_REQUIRED_INSTALLED_ASSETS = ("assets/banner.png",)
+LEAN_INSTALL_MARKERS = ("_icon.png",)
 VERIFY_WRITE_GATES = (
     ("run_checks", "allow_execute"),
     ("scaffold_skill", "apply"),
@@ -94,13 +103,15 @@ def _read_text(path):
     return data.decode("utf-8", errors="replace")
 
 
-def _iter_files(root, extensions=None, max_files=5000, all_files=False):
+def _iter_files(root, extensions=None, max_files=5000, all_files=False, ignore_temp=True):
     root = Path(root)
     extensions = set(extensions or TEXT_EXTS)
     count = 0
     for current, dirs, files in os.walk(str(root)):
         dirs[:] = sorted(d for d in dirs if d not in IGNORE_DIRS)
         for name in sorted(files):
+            if ignore_temp and IGNORE_TEMP_FILE_RE.match(name):
+                continue
             path = Path(current) / name
             if path.is_symlink():
                 continue

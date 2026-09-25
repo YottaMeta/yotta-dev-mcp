@@ -30,9 +30,14 @@ def _resolve_python_import(source_rel, node):
         if node.level > 1:
             parts = parts[:-(node.level - 1)] if len(parts) >= node.level - 1 else []
         prefix = "/".join(parts)
+        if not node.module:
+            return [
+                (prefix + "/" + alias.name.replace(".", "/")).strip("/")
+                for alias in node.names
+            ]
         module = node.module or ""
         target = (prefix + "/" + module.replace(".", "/")).strip("/")
-        return [target + ".py" if target else source_rel]
+        return [target] if target else [source_rel]
     if node.module:
         return [node.module]
     return []
@@ -47,7 +52,12 @@ def _repo_map_python(path, rel):
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             for target in _resolve_python_import(rel, node):
-                imports.append({"source": rel, "target": target, "line": getattr(node, "lineno", 1)})
+                imports.append({
+                    "source": rel,
+                    "target": target,
+                    "line": getattr(node, "lineno", 1),
+                    "relative": isinstance(node, ast.ImportFrom) and bool(node.level),
+                })
     return imports
 
 def _repo_map_js(path, rel):
@@ -77,7 +87,7 @@ def _resolve_relative_module(raw_target, source_rel, module_set, root=None):
         return base, "file"
     return None, None
 
-def _classify_python_import(raw_target, source_rel, module_set):
+def _classify_python_import(raw_target, source_rel, module_set, relative=False):
     if raw_target.endswith(".py"):
         if raw_target in module_set:
             return "internal", raw_target
@@ -91,7 +101,7 @@ def _classify_python_import(raw_target, source_rel, module_set):
         for candidate in (base + ".py", base + "/__init__.py"):
             if candidate in module_set:
                 return "internal", candidate
-    return "external", raw_target
+    return ("unresolved" if relative else "external"), raw_target
 
 def _classify_js_import(raw_target, source_rel, module_set, root=None):
     if raw_target.startswith("."):
@@ -265,19 +275,21 @@ def system_model(path, max_files=2000, contract_file=None):
         suffix = file_path.suffix.lower()
         if suffix == ".py":
             raw_imports = _repo_map_python(file_path, rel)
-            classifier = lambda raw: _classify_python_import(raw, rel, module_set)  # noqa: E731
         elif suffix in JS_EXTS:
             raw_imports = _repo_map_js(file_path, rel)
-            classifier = lambda raw: _classify_js_import(raw, rel, module_set, root)  # noqa: E731
         else:
             raw_imports = []
-            classifier = None
         module_imports = []
         for raw in raw_imports:
             target_raw = raw["target"]
             if target_raw == rel:
                 continue
-            kind, target = classifier(target_raw)
+            if suffix == ".py":
+                kind, target = _classify_python_import(
+                    target_raw, rel, module_set, relative=raw.get("relative", False)
+                )
+            else:
+                kind, target = _classify_js_import(target_raw, rel, module_set, root)
             entry = {
                 "source": rel,
                 "target": target,

@@ -126,6 +126,12 @@ python scripts/dev_engine.py mcp-doctor
 
 ## Current version
 
+`0.2.1` (2026-09-25) is a defect-fix release: `mcp_doctor` now covers Codex,
+WorkBuddy, OpenCode, Cursor and other hosts with a coverage report;
+`self_test(mode="installed")` is distribution-aware; `repo_map` resolves
+`from . import X`; `scan_secrets` filters path/hash/filename noise; and
+`review_code` ignores temporary directories.
+
 `0.2.0` (2026-09-25) adds `system_model`, `architecture_review`,
 `impact_analysis`, `verify_change`, `self_test`, `run_adapter`, and the
 `.yotta/architecture.json` plus optional `.yotta/verification.json` contracts on

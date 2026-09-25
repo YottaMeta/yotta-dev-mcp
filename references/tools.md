@@ -14,6 +14,12 @@ Input:
 
 Output: `root`, `modules`, `imports`, `entrypoints`, `truncated`.
 
+Python imports include absolute, `from .X import Y`, `from . import X`,
+`as` aliases, packages and multi-name forms. Temporary / agent-state
+directories (`.workflow`, `.codex`, `.cursor`, `.claude`, `.agents`,
+`scratch`, `_probe`, `probe`, `sandbox`, `debug`, `.tmp`) and probe/temp
+file names are ignored by default.
+
 ## system_model
 
 Input:
@@ -201,14 +207,36 @@ Input:
 
 Only added lines are reviewed. Output: `files`, `findings`, `truncated`.
 
+`review_code` uses the same default ignore set as `repo_map`: agent state
+directories, scratch / probe / sandbox / debug directories and probe/temp
+file names do not flood the result. `review_diff` only reviews added lines,
+so it is unaffected by directory traversal.
+
 ## mcp_doctor
 
 Input:
 
 - `skills_dirs` (optional array).
 - `config_paths` (optional array).
+- `include_defaults` (optional boolean): when `config_paths` is supplied, also
+  scan the built-in host registry instead of explicit-only scope.
 
-Output: `skills`, `mcp_configs`, `issues`, `checked_skills`, `checked_configs`.
+Output: `skills`, `mcp_configs`, `coverage`, `skills_coverage`, `issues`,
+`coverage_gaps`, `unknown_hosts`, `summary`, `scope`, `checked_skills`,
+`checked_configs`, `checked_hosts`.
+
+Discovery is tiered and environment-aware: verified hosts include Codex
+(`$CODEX_HOME/config.toml`, JSON fallbacks), Cursor, WorkBuddy
+(`~/.workbuddy/mcp.json` plus `connectors/*/mcp.json`), OpenCode
+(`$XDG_CONFIG_HOME/opencode/opencode.jsonc|json`), Claude Code, Windsurf,
+Continue, Gemini, Qwen, Trae, Comate, CodeBuddy, Kimi, Kiro, VS Code and Zed;
+additional hosts are best-effort candidates and are reported as
+`unverified` when absent. JSON, JSONC and a narrow TOML `[mcp_servers.*]`
+subset are parsed; YAML is reported as `unsupported`, never silently skipped.
+Only server names are returned; commands, args and env values are never
+included. `summary.all_clear` is true only for a fully covered, issue-free
+default scan; always read `coverage_confidence` before treating it as
+all-clear.
 
 ## scan_secrets
 
@@ -217,6 +245,11 @@ Input: `path` or `text`, optional `max_findings`, optional `include_git_history`
 
 Output: `findings` with `path`, `line`, `rule`, `severity`, redacted `evidence`,
 `suggestion`; `truncated`.
+
+High-entropy findings apply a narrow noise filter for absolute paths,
+URL / `file://` percent-encoded paths, common binary/source/document
+suffixes and hash-context hex values (SHA-1/256/512, MD5, checksum, digest,
+integrity). Credential-name, AWS-key and private-key rules are not relaxed.
 
 ## scan_dependencies
 

@@ -92,6 +92,14 @@ def match_layers(path, contract):
     return matched
 
 
+def match_any(path, patterns):
+    """Return True when the path matches at least one glob in the list."""
+    for pattern in patterns or []:
+        if match_path(path, pattern):
+            return True
+    return False
+
+
 def _path_problem(value):
     if not isinstance(value, str) or not value.strip():
         return "path must be a non-empty string"

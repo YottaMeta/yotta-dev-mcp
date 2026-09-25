@@ -4,11 +4,16 @@
 
 - 新增 `system_model`：模块、依赖、入口、测试映射、配置与数据归属的确定性系统模型，
   附带 `.yotta/architecture.json` 契约分层。
+- 新增 `architecture_review`：按契约评审依赖规则、边界可见性与数据归属，
+  每条产出 file / line / severity 证据；critical / high 判 FAIL，medium / low 只告警，
+  无法判定的部分进 UNKNOWN，声明的不变量一律进 `unverified_claims`。
+- 新增 `impact_analysis`：从 changed_files / unified diff / 目标符号生成变更影响锥，
+  含直接消费者、受影响层与边界、数据存储、不变量、映射测试、可解释风险分级与回滚探针。
 - 新增架构契约（版本 1）：分层、依赖规则、边界、数据归属、不变量、风险权重；
   校验输出 code / severity / JSON pointer / evidence。
 - 结论只给 `PASS` / `FAIL` / `UNKNOWN`；缺证据项写入 `unknowns`，未执行的验证级别
   写入 `unverified_claims`；模型带稳定 `model_digest`。
-- 原 12 个工具行为不变；`system_model` 只读、离线、零依赖。
+- 原 12 个工具行为不变；新增的三个工具只读、离线、零依赖。
 
 ## v0.1.1 (2026-09-25)
 

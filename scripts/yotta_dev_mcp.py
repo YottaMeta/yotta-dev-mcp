@@ -55,7 +55,8 @@ def _tool(name, arguments):
 
 TOOL_HANDLERS = {
     name: (lambda arguments, tool_name=name: _tool(tool_name, arguments))
-    for name in ("repo_map", "system_model", "find_code", "compress_output",
+    for name in ("repo_map", "system_model", "architecture_review", "impact_analysis",
+                 "find_code", "compress_output",
                  "review_code", "review_diff", "mcp_doctor",
                  "scan_secrets", "scan_dependencies", "check_publish_readiness",
                  "run_checks", "scaffold_skill", "workflow_state")
@@ -94,6 +95,66 @@ def mcp_tools():
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Repository or source directory"},
+                    "max_files": {"type": "integer", "minimum": 1,
+                                  "description": "Maximum source files to inspect (default 2000)"},
+                    "contract_file": {
+                        "type": "string",
+                        "description": "Contract path relative to the repository root "
+                                       "(default .yotta/architecture.json)",
+                    },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "architecture_review",
+            "description": (
+                "Review a local repository against the .yotta/architecture.json contract: "
+                "dependency rules, boundary visibility and data ownership, each finding "
+                "with file, line and severity. critical/high findings fail the review; "
+                "medium/low are advisory; unverifiable items become UNKNOWN. Read-only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Repository or source directory"},
+                    "max_files": {"type": "integer", "minimum": 1,
+                                  "description": "Maximum source files to inspect (default 2000)"},
+                    "contract_file": {
+                        "type": "string",
+                        "description": "Contract path relative to the repository root "
+                                       "(default .yotta/architecture.json)",
+                    },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "impact_analysis",
+            "description": (
+                "Build the change impact cone for local changes: reverse-dependency "
+                "consumers, affected layers, boundaries, data stores and invariants, "
+                "mapped tests, an explainable blast radius and rollback probes. Accepts "
+                "changed_files, a unified diff or target symbols. Read-only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Repository or source directory"},
+                    "changed_files": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Repository-relative changed files",
+                    },
+                    "diff": {"type": "string",
+                             "description": "Unified diff text to read changed files from"},
+                    "symbols": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Target symbols; their definition sites become the change",
+                    },
+                    "depth": {"type": "integer", "minimum": 1, "maximum": 10,
+                              "description": "Reverse-dependency depth (default 3)"},
                     "max_files": {"type": "integer", "minimum": 1,
                                   "description": "Maximum source files to inspect (default 2000)"},
                     "contract_file": {

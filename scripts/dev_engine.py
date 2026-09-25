@@ -53,6 +53,11 @@ TEST_NAME_RE = re.compile(
 )
 UNKNOWN_LIMIT = 50
 EVIDENCE_LIMIT = 100
+RISK_ENUM_WEIGHTS = {"critical": 5, "high": 4, "medium": 2, "low": 1}
+CONE_LIMIT = 500
+SYMBOL_MATCH_LIMIT = 20
+IMPORT_KINDS_DECISIVE = ("internal", "internal-file")
+BLAST_LEVELS = ((9, "critical"), (6, "high"), (3, "medium"))
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 ERROR_RE = re.compile(
@@ -1328,10 +1333,968 @@ def system_model(path, max_files=2000, contract_file=None):
     }
 
 
+def _module_layers(model):
+    return {item["id"]: item.get("layer") for item in model["modules"]}
+
+
+def _risk_weight(contract, layer_id):
+    """Risk weight for a layer: explicit risk_weights, else the risk enum."""
+    if not layer_id:
+        return 0.0
+    weights = (contract or {}).get("risk_weights") or {}
+    value = weights.get(layer_id)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        value = None
+        for layer in (contract or {}).get("layers") or []:
+            if layer.get("id") == layer_id:
+                value = RISK_ENUM_WEIGHTS.get(layer.get("risk"), 1)
+                break
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        value = 1
+    return float(max(0, min(5, value)))
+
+
+def _decisive_edges(model):
+    return [edge for edge in model["imports"] if edge["kind"] in IMPORT_KINDS_DECISIVE]
+
+
+def _edge_evidence(edge, detail):
+    return {
+        "path": edge["source"],
+        "line": edge["line"],
+        "detail": detail,
+        "snippet": edge.get("raw"),
+    }
+
+
+def _review_rules(contract, model, unknown_sink, violation_sink):
+    module_layers = _module_layers(model)
+    edges = sorted(_decisive_edges(model),
+                   key=lambda item: (item["source"], item["line"], item["target"]))
+    checked = []
+    for rule in contract["rules"]:
+        severity = rule.get("severity") or dev_contract.RULE_DEFAULT_SEVERITY
+        violations = 0
+        undecided = 0
+        decisive = 0
+        seen_targets = set()
+        for edge in edges:
+            if module_layers.get(edge["source"]) != rule["from"]:
+                continue
+            target_layer = module_layers.get(edge["target"])
+            if target_layer is None:
+                if edge["kind"] == "internal" and edge["target"] not in seen_targets:
+                    seen_targets.add(edge["target"])
+                    undecided += 1
+                    unknown_sink.append({
+                        "kind": "rule-target-unassigned",
+                        "id": "%s -> %s" % (rule["id"], edge["target"]),
+                        "rule": rule["id"],
+                        "target": edge["target"],
+                        "detail": "the target module has no layer, so the rule cannot be decided",
+                        "next_step": "assign the module to a layer or narrow the rule",
+                    })
+                continue
+            decisive += 1
+            if rule["type"] == "forbid-dependency":
+                broke = target_layer == rule["to"]
+                message = rule.get("claim") or (
+                    "%s must not import %s" % (rule["from"], rule["to"]))
+                code = "rule-forbid-dependency"
+            else:
+                broke = target_layer not in (rule["to"] or [])
+                message = rule.get("claim") or (
+                    "%s may only import %s" % (rule["from"], ", ".join(rule["to"] or [])))
+                code = "rule-allow-dependency"
+            if not broke:
+                continue
+            violations += 1
+            violation_sink.append({
+                "code": code,
+                "rule": rule["id"],
+                "severity": severity,
+                "message": message,
+                "from_layer": rule["from"],
+                "to_layer": target_layer,
+                "evidence": [_edge_evidence(
+                    edge,
+                    "imports %s (layer %s), which breaks %s"
+                    % (edge["target"], target_layer, rule["id"]),
+                )],
+            })
+        if violations and severity in dev_contract.BLOCKING_SEVERITIES:
+            status = "FAIL"
+        elif violations:
+            status = "WARN"
+        elif undecided:
+            status = "UNKNOWN"
+        else:
+            status = "PASS"
+        checked.append({
+            "id": rule["id"],
+            "type": rule["type"],
+            "from": rule["from"],
+            "to": rule["to"],
+            "severity": severity,
+            "claim": rule.get("claim"),
+            "status": status,
+            "decided_imports": decisive,
+            "violations": violations,
+            "undecided_imports": undecided,
+        })
+    return checked
+
+
+def _review_boundaries(contract, model, unknown_sink, violation_sink):
+    module_layers = _module_layers(model)
+    edges = sorted(_decisive_edges(model),
+                   key=lambda item: (item["source"], item["line"], item["target"]))
+    checked = []
+    for boundary in contract["boundaries"]:
+        paths = boundary["paths"] or []
+        protected = sorted(item["id"] for item in model["modules"]
+                           if dev_contract.match_any(item["id"], paths))
+        visibility = boundary.get("visibility") or "internal"
+        severity = "high" if visibility == "private" else "medium"
+        violations = 0
+        undecided = 0
+        consumers = 0
+        seen_importers = set()
+        if not protected:
+            unknown_sink.append({
+                "kind": "boundary-no-modules",
+                "id": boundary["id"],
+                "detail": "no module matches the boundary globs",
+                "next_step": "point the boundary at existing modules or drop it",
+            })
+        protected_set = set(protected)
+        for edge in edges:
+            if edge["target"] not in protected_set:
+                continue
+            consumers += 1
+            importer = edge["source"]
+            if dev_contract.match_any(importer, paths) or visibility == "public":
+                continue
+            importer_layer = module_layers.get(importer)
+            if importer_layer is None:
+                if importer not in seen_importers:
+                    seen_importers.add(importer)
+                    undecided += 1
+                    unknown_sink.append({
+                        "kind": "boundary-importer-unassigned",
+                        "id": "%s <- %s" % (boundary["id"], importer),
+                        "boundary": boundary["id"],
+                        "target": importer,
+                        "detail": "the importer has no layer, so boundary visibility is undecided",
+                        "next_step": "assign the importer to a layer",
+                    })
+                continue
+            if visibility == "internal" and importer_layer == boundary["layer"]:
+                continue
+            violations += 1
+            violation_sink.append({
+                "code": "boundary-visibility",
+                "rule": boundary["id"],
+                "severity": severity,
+                "message": "module outside the %s boundary imports it (visibility %s)"
+                           % (boundary["id"], visibility),
+                "boundary": boundary["id"],
+                "layer": boundary["layer"],
+                "visibility": visibility,
+                "evidence": [_edge_evidence(
+                    edge,
+                    "imports %s, protected by the %s boundary (%s)"
+                    % (edge["target"], boundary["id"], visibility),
+                )],
+            })
+        if violations and severity in dev_contract.BLOCKING_SEVERITIES:
+            status = "FAIL"
+        elif violations:
+            status = "WARN"
+        elif undecided or not protected:
+            status = "UNKNOWN"
+        else:
+            status = "PASS"
+        checked.append({
+            "id": boundary["id"],
+            "layer": boundary["layer"],
+            "visibility": visibility,
+            "paths": list(paths),
+            "status": status,
+            "protected_modules": protected,
+            "imports_of_protected_modules": consumers,
+            "violations": violations,
+            "undecided_imports": undecided,
+        })
+    return checked
+
+
+def _glob_literal_prefix(pattern):
+    text = str(pattern or "")
+    for marker in ("*", "?"):
+        index = text.find(marker)
+        if index >= 0:
+            text = text[:index]
+    return text.rstrip("/")
+
+
+def _review_data_ownership(contract, model, root, violation_sink):
+    module_layers = _module_layers(model)
+    stores = contract["data_ownership"]
+    prefixes = {}
+    for store in stores:
+        candidates = [_glob_literal_prefix(item) for item in store["paths"] or []]
+        prefixes[store["store"]] = sorted(item for item in candidates if len(item) >= 4)
+    needed = sorted({item for values in prefixes.values() for item in values})
+    texts = {}
+    if needed:
+        for module in model["modules"]:
+            if module.get("layer") is None:
+                continue
+            try:
+                texts[module["id"]] = _read_text(root / module["id"])
+            except (OSError, ValueError):
+                continue
+    checked = []
+    for store in stores:
+        owner = store["owner"]
+        paths = store["paths"] or []
+        violations = 0
+        mismatched = sorted(item["id"] for item in model["modules"]
+                            if dev_contract.match_any(item["id"], paths)
+                            and item.get("layer") != owner)
+        for rel in mismatched:
+            violations += 1
+            violation_sink.append({
+                "code": "data-ownership-mismatch",
+                "rule": store["store"],
+                "severity": "medium",
+                "message": "module inside the store paths belongs to layer %s, not the owner %s"
+                           % (module_layers.get(rel), owner),
+                "store": store["store"],
+                "owner": owner,
+                "evidence": [{"path": rel, "line": 1, "detail":
+                              "matches the declared paths of store %s" % store["store"]}],
+            })
+        references = 0
+        store_prefixes = prefixes.get(store["store"]) or []
+        if store_prefixes:
+            for rel in sorted(texts):
+                if module_layers.get(rel) == owner:
+                    continue
+                for lineno, line in enumerate(texts[rel].splitlines(), 1):
+                    if any(prefix in line for prefix in store_prefixes):
+                        references += 1
+                        violations += 1
+                        violation_sink.append({
+                            "code": "data-store-access-outside-owner",
+                            "rule": store["store"],
+                            "severity": "medium",
+                            "message": "layer %s references the store owned by %s"
+                                       % (module_layers.get(rel), owner),
+                            "store": store["store"],
+                            "owner": owner,
+                            "evidence": [{
+                                "path": rel,
+                                "line": lineno,
+                                "detail": "references the %s store path" % store["store"],
+                                "snippet": line.strip()[:200],
+                            }],
+                        })
+                        break
+        owner_modules = sorted(item["id"] for item in model["modules"]
+                               if item.get("layer") == owner)
+        checked.append({
+            "store": store["store"],
+            "owner": owner,
+            "kind": store.get("kind"),
+            "paths": list(paths),
+            "status": "WARN" if violations else "PASS",
+            "owner_modules": len(owner_modules),
+            "mismatched_modules": mismatched,
+            "references_outside_owner": references,
+        })
+    return checked
+
+
+def _review_invariants(contract, unverified_sink):
+    checked = []
+    for invariant in contract["invariants"]:
+        check = invariant.get("check") or "manual"
+        if check == "static":
+            reason = "no built-in evaluator covers this claim yet"
+        elif check == "command":
+            reason = "architecture_review never executes commands"
+        else:
+            reason = "human review is required"
+        unverified_sink.append({
+            "claim": invariant["claim"],
+            "level": "L1",
+            "status": "UNVERIFIED",
+            "reason": reason,
+            "invariant": invariant["id"],
+            "check": check,
+            "severity": invariant.get("severity") or dev_contract.RULE_DEFAULT_SEVERITY,
+            "paths": list(invariant.get("paths") or []),
+        })
+        checked.append({
+            "id": invariant["id"],
+            "claim": invariant["claim"],
+            "check": check,
+            "severity": invariant.get("severity") or dev_contract.RULE_DEFAULT_SEVERITY,
+            "paths": list(invariant.get("paths") or []),
+            "status": "UNVERIFIED",
+            "reason": reason,
+        })
+    return checked
+
+
+def _architecture_review_core(model_result, contract_result, root):
+    """Shared review core: evaluate the contract against one system model."""
+    contract = contract_result.get("contract") if contract_result.get("ok") else None
+    violations = []
+    unknowns = [dict(item) for item in model_result["unknowns"]]
+    unverified = []
+    evidence = []
+    checked = {"rules": [], "boundaries": [], "data_stores": [], "invariants": []}
+    if contract:
+        checked["rules"] = _review_rules(contract, model_result["model"], unknowns, violations)
+        checked["boundaries"] = _review_boundaries(
+            contract, model_result["model"], unknowns, violations)
+        checked["data_stores"] = _review_data_ownership(
+            contract, model_result["model"], root, violations)
+        checked["invariants"] = _review_invariants(contract, unverified)
+    if model_result["truncated"]:
+        unknowns.append({
+            "kind": "model-truncated",
+            "id": model_result["root"],
+            "detail": "the file limit cut the scan short; some modules were not reviewed",
+            "next_step": "raise max_files and rerun the review",
+        })
+    blocking = [item for item in violations
+                if item["severity"] in dev_contract.BLOCKING_SEVERITIES]
+    advisory = [item for item in violations
+                if item["severity"] not in dev_contract.BLOCKING_SEVERITIES]
+    contract_blocking = [item for item in model_result["contract"]["findings"]
+                         if item["severity"] in dev_contract.BLOCKING_SEVERITIES]
+    for item in violations:
+        for entry in item["evidence"]:
+            evidence.append({
+                "path": entry["path"],
+                "line": entry.get("line"),
+                "detail": "%s: %s" % (item["code"], entry["detail"]),
+            })
+    for item in model_result["contract"]["findings"]:
+        evidence.append({
+            "path": model_result["contract"]["path"],
+            "pointer": item["pointer"],
+            "detail": "%s: %s" % (item["severity"], item["message"]),
+        })
+    evidence.sort(key=lambda item: (item["path"], item.get("line") or 0, item["detail"]))
+    if len(evidence) > EVIDENCE_LIMIT:
+        evidence = evidence[:EVIDENCE_LIMIT]
+    if contract_blocking or blocking:
+        status = "FAIL"
+    elif not model_result["contract"]["present"] or unknowns:
+        status = "UNKNOWN"
+    else:
+        status = "PASS"
+    violations.sort(key=lambda item: (item["code"], item["rule"], item["evidence"][0]["path"]))
+    unknowns.sort(key=lambda item: (item["kind"], item["id"]))
+    return {
+        "status": status,
+        "checked": checked,
+        "violations": violations,
+        "blocking_findings": len(blocking) + len(contract_blocking),
+        "advisory_findings": len(advisory),
+        "unknowns": unknowns,
+        "unverified_claims": unverified,
+        "evidence": evidence,
+    }
+
+
+def architecture_review(path, max_files=2000, contract_file=None):
+    """Review a repository against `.yotta/architecture.json`. Read-only."""
+    root = Path(path)
+    if not root.exists():
+        raise ValueError("路径不存在: %s" % path)
+    if not root.is_dir():
+        raise ValueError("architecture_review 需要目录: %s" % path)
+    model_result = system_model(str(root), max_files=max_files, contract_file=contract_file)
+    contract_result = dev_contract.load_contract(root, contract_file=contract_file)
+    core = _architecture_review_core(model_result, contract_result, root)
+    return {
+        "status": core["status"],
+        "root": model_result["root"],
+        "contract": model_result["contract"],
+        "checked": core["checked"],
+        "violations": core["violations"],
+        "blocking_findings": core["blocking_findings"],
+        "advisory_findings": core["advisory_findings"],
+        "unknowns": core["unknowns"],
+        "unverified_claims": core["unverified_claims"],
+        "evidence": core["evidence"],
+        "truncated": model_result["truncated"],
+        "model_digest": model_result["model_digest"],
+    }
+
+
+HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+SYMBOL_PATTERNS = (
+    ("python", r"^\s*(?:async\s+)?def\s+%s\s*\("),
+    ("python", r"^\s*class\s+%s\s*[\(:]"),
+    ("js", r"^\s*(?:export\s+)?(?:async\s+)?function\s+%s\s*\("),
+    ("js", r"^\s*(?:export\s+)?(?:const|let|var)\s+%s\s*="),
+    ("js", r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+%s\b"),
+    ("go", r"^\s*func\s+(?:\([^)]*\)\s*)?%s\s*\("),
+)
+SYMBOL_LANGUAGES = {
+    "python": ("python",),
+    "js": ("javascript", "typescript"),
+    "go": ("go",),
+}
+
+
+def _strip_diff_path(raw):
+    text = str(raw).strip().split("\t")[0].strip()
+    if not text or text == "/dev/null":
+        return None
+    if text.startswith("a/") or text.startswith("b/"):
+        text = text[2:]
+    return text.replace("\\", "/")
+
+
+def _parse_unified_diff(diff_text):
+    """Parse a unified diff into changed files plus added/removed line numbers."""
+    changes = []
+    current = None
+    old_path = None
+    old_line = 0
+    new_line = 0
+    for line in str(diff_text).splitlines():
+        if line.startswith("--- "):
+            old_path = _strip_diff_path(line[4:])
+            current = None
+            continue
+        if line.startswith("+++ "):
+            new_path = _strip_diff_path(line[4:])
+            if new_path is None:
+                if old_path is None:
+                    continue
+                path, change = old_path, "deleted"
+            elif old_path is None:
+                path, change = new_path, "added"
+            else:
+                path, change = new_path, "modified"
+            current = {"path": path, "change": change,
+                       "changed_lines": [], "removed_lines": []}
+            changes.append(current)
+            continue
+        match = HUNK_RE.match(line)
+        if match:
+            old_line = int(match.group(1))
+            new_line = int(match.group(2))
+            continue
+        if current is None:
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            current["changed_lines"].append(new_line)
+            new_line += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            current["removed_lines"].append(old_line)
+            old_line += 1
+        elif line.startswith(" "):
+            old_line += 1
+            new_line += 1
+    for item in changes:
+        item["changed_lines"] = sorted(set(item["changed_lines"]))
+        item["removed_lines"] = sorted(set(item["removed_lines"]))
+    return changes
+
+
+def _symbol_locations(model, root, symbol):
+    escaped = re.escape(symbol)
+    hits = []
+    for module in model["modules"]:
+        language = module["language"]
+        patterns = [
+            re.compile(pattern % escaped)
+            for kind, pattern in SYMBOL_PATTERNS
+            if language in SYMBOL_LANGUAGES[kind]
+        ]
+        if not patterns:
+            continue
+        try:
+            text = _read_text(root / module["id"])
+        except (OSError, ValueError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if any(pattern.match(line) for pattern in patterns):
+                hits.append({"path": module["id"], "line": lineno, "language": language})
+                if len(hits) >= SYMBOL_MATCH_LIMIT:
+                    return hits
+    return hits
+
+
+def _dependency_cone(model, changed_paths, depth):
+    """Reverse-dependency breadth-first cone from the changed modules."""
+    consumers = {}
+    for edge in _decisive_edges(model):
+        consumers.setdefault(edge["target"], []).append(edge)
+    module_layers = _module_layers(model)
+    test_paths = {item["path"] for item in model["tests"]}
+    nodes = {}
+    order = []
+    for path in sorted(set(changed_paths)):
+        nodes[path] = {
+            "path": path, "depth": 0, "via": None, "line": None,
+            "layer": module_layers.get(path), "is_test": path in test_paths,
+        }
+        order.append(path)
+    truncated = False
+    index = 0
+    while index < len(order):
+        current = order[index]
+        index += 1
+        node = nodes[current]
+        if node["depth"] >= depth:
+            continue
+        for edge in sorted(consumers.get(current, []),
+                           key=lambda item: (item["source"], item["line"])):
+            consumer = edge["source"]
+            if consumer in nodes:
+                continue
+            if len(nodes) >= CONE_LIMIT:
+                truncated = True
+                break
+            nodes[consumer] = {
+                "path": consumer,
+                "depth": node["depth"] + 1,
+                "via": current,
+                "line": edge["line"],
+                "layer": module_layers.get(consumer),
+                "is_test": consumer in test_paths,
+            }
+            order.append(consumer)
+        if truncated:
+            break
+    return nodes, truncated
+
+
+def _relevant_tests(model, nodes):
+    relevant = []
+    for item in model["tests"]:
+        hits = sorted({target for target in item["targets"] if target in nodes})
+        in_cone = item["path"] in nodes
+        if not hits and not in_cone:
+            continue
+        if in_cone:
+            depth = nodes[item["path"]]["depth"]
+        elif hits:
+            depth = min(nodes[target]["depth"] for target in hits) + 1
+        else:
+            depth = 0
+        relevant.append({"path": item["path"], "targets_hit": hits, "depth": depth})
+    return sorted(relevant, key=lambda item: item["path"])
+
+
+def _affected_boundaries(contract, paths):
+    affected = []
+    for boundary in (contract or {}).get("boundaries") or []:
+        matched = sorted(path for path in paths
+                         if dev_contract.match_any(path, boundary["paths"] or []))
+        if matched:
+            affected.append({
+                "id": boundary["id"],
+                "layer": boundary["layer"],
+                "visibility": boundary.get("visibility") or "internal",
+                "matched_paths": matched,
+            })
+    return sorted(affected, key=lambda item: item["id"])
+
+
+def _affected_data_stores(model, affected_layers, paths):
+    affected = []
+    for store in model["data_stores"]:
+        if store.get("detected"):
+            matched = sorted(path for path in paths if path == store["store"])
+            if matched:
+                affected.append({
+                    "store": store["store"],
+                    "owner": store.get("owner"),
+                    "kind": store.get("kind"),
+                    "reason": "changed path is the detected store file",
+                    "matched_paths": matched,
+                })
+            continue
+        reasons = []
+        matched = sorted(path for path in paths
+                         if dev_contract.match_any(path, store["paths"] or []))
+        if store.get("owner") in affected_layers:
+            reasons.append("owner layer %s is in the impact cone" % store["owner"])
+        if matched:
+            reasons.append("changed path matches the declared store globs")
+        if reasons:
+            affected.append({
+                "store": store["store"],
+                "owner": store.get("owner"),
+                "kind": store.get("kind"),
+                "reason": "; ".join(reasons),
+                "matched_paths": matched,
+            })
+    return sorted(affected, key=lambda item: item["store"])
+
+
+def _affected_invariants(contract, paths):
+    affected = []
+    for invariant in (contract or {}).get("invariants") or []:
+        globs = invariant.get("paths") or []
+        matched = sorted(path for path in paths
+                         if globs and dev_contract.match_any(path, globs))
+        if globs and not matched:
+            continue
+        affected.append({
+            "id": invariant["id"],
+            "claim": invariant["claim"],
+            "severity": invariant.get("severity") or dev_contract.RULE_DEFAULT_SEVERITY,
+            "check": invariant.get("check") or "manual",
+            "scope": "paths" if globs else "repo",
+            "matched_paths": matched,
+        })
+    return sorted(affected, key=lambda item: item["id"])
+
+
+def _blast_radius(contract, nodes, affected_layers, boundaries, stores, in_scope):
+    reasons = []
+    score = 0
+    if affected_layers:
+        base = max(_risk_weight(contract, layer) for layer in affected_layers)
+        weight = int(min(5, base))
+        if weight:
+            score += weight
+            reasons.append({
+                "factor": "layer-risk",
+                "weight": weight,
+                "detail": "highest declared risk among affected layers is %g" % base,
+            })
+    if len(affected_layers) >= 5:
+        score += 2
+        reasons.append({"factor": "layer-count", "weight": 2,
+                        "detail": "%d layers are affected" % len(affected_layers)})
+    elif len(affected_layers) >= 3:
+        score += 1
+        reasons.append({"factor": "layer-count", "weight": 1,
+                        "detail": "%d layers are affected" % len(affected_layers)})
+    depth = max((node["depth"] for node in nodes.values()), default=0)
+    if depth >= 2:
+        score += 1
+        reasons.append({"factor": "cone-depth", "weight": 1,
+                        "detail": "consumer chain reaches depth %d" % depth})
+    public_surface = [item["id"] for item in boundaries if item["visibility"] == "public"]
+    if public_surface:
+        score += 1
+        reasons.append({"factor": "public-boundary", "weight": 1,
+                        "detail": "public boundary in scope: %s" % ", ".join(public_surface)})
+    if stores:
+        weight = min(2, len(stores))
+        score += weight
+        reasons.append({"factor": "data-store", "weight": weight,
+                        "detail": "%d data store(s) touched" % len(stores)})
+    blocking = [item for item in in_scope
+                if item["severity"] in dev_contract.BLOCKING_SEVERITIES]
+    if blocking:
+        critical = any(item["severity"] == "critical" for item in blocking)
+        weight = 3 if critical else 2
+        score += weight
+        reasons.append({"factor": "architecture-violation", "weight": weight,
+                        "detail": "%d blocking architecture violation(s) in scope"
+                                  % len(blocking)})
+    capped = min(10, score)
+    level = "low"
+    for threshold, name in BLAST_LEVELS:
+        if capped >= threshold:
+            level = name
+            break
+    return {
+        "level": level,
+        "score": score,
+        "capped_score": capped,
+        "capped": score > capped,
+        "reasons": reasons,
+    }
+
+
+def _rollback_probes(model, nodes, stores, tests, invariants):
+    probes = []
+    # Test files that guard on __main__ are runnable, but they are covered by the
+    # test probe below; treating them as startup surfaces only adds noise.
+    entrypoints = sorted(path for path in set(model["entrypoints"]) & set(nodes)
+                         if not _is_test_file(path))[:5]
+    for store in stores:
+        probes.append({
+            "kind": "data-store",
+            "target": store["store"],
+            "probe": "revert the change and verify %s integrity, or restore it from backup"
+                     % store["store"],
+            "evidence": store["reason"],
+        })
+    for entry in entrypoints:
+        probes.append({
+            "kind": "entrypoint",
+            "target": entry,
+            "probe": "revert and run %s once to confirm startup still works" % entry,
+            "evidence": "entrypoint in the impact cone",
+        })
+    if tests:
+        probes.append({
+            "kind": "tests",
+            "target": ", ".join(item["path"] for item in tests[:5]),
+            "probe": "run the mapped tests before and after revert",
+            "evidence": "%d mapped test file(s)" % len(tests),
+        })
+    for invariant in invariants:
+        if invariant["check"] != "command":
+            continue
+        probes.append({
+            "kind": "invariant",
+            "target": invariant["id"],
+            "probe": "run the declared check for %s after revert" % invariant["id"],
+            "evidence": invariant["claim"],
+        })
+    if not probes:
+        probes.append({
+            "kind": "model",
+            "target": "L0/L1",
+            "probe": "no store, entrypoint or test mapping was in scope; rerun the review after revert",
+            "evidence": "impact cone produced no probe anchor",
+        })
+    return probes
+
+
+def _impact_unverified_claims():
+    return [
+        {
+            "claim": "the change passes its tests",
+            "level": "L2-L3",
+            "status": "UNVERIFIED",
+            "reason": "impact_analysis executes no tests",
+        },
+        {
+            "claim": "behaviour survives mutation and property checks",
+            "level": "L4",
+            "status": "UNVERIFIED",
+            "reason": "impact_analysis runs no mutation or property checks",
+        },
+        {
+            "claim": "an independent reviewer agrees with the change",
+            "level": "L5",
+            "status": "UNVERIFIED",
+            "reason": "independent review stays a human or separate-agent step",
+        },
+    ]
+
+
+def impact_analysis(path, changed_files=None, diff=None, symbols=None, depth=3,
+                    max_files=2000, contract_file=None):
+    """Build a deterministic change impact cone for local changes. Read-only."""
+    root = Path(path)
+    if not root.exists():
+        raise ValueError("路径不存在: %s" % path)
+    if not root.is_dir():
+        raise ValueError("impact_analysis 需要目录: %s" % path)
+    if isinstance(depth, bool) or not isinstance(depth, int) or not 1 <= depth <= 10:
+        raise ValueError("depth 必须是 1 到 10 之间的整数")
+    requested = [str(item).replace("\\", "/").lstrip("./") for item in (changed_files or [])
+                 if str(item).strip()]
+    wanted_symbols = [str(item).strip() for item in (symbols or []) if str(item).strip()]
+    if not requested and not wanted_symbols and not str(diff or "").strip():
+        raise ValueError("impact_analysis 需要 changed_files、diff 或 symbols 至少一项")
+
+    model_result = system_model(str(root), max_files=max_files, contract_file=contract_file)
+    model = model_result["model"]
+    contract_result = dev_contract.load_contract(root, contract_file=contract_file)
+    contract = contract_result["contract"] if contract_result["ok"] else None
+    module_layers = _module_layers(model)
+    unknowns = [dict(item) for item in model_result["unknowns"]]
+    changes = {}
+    evidence = []
+
+    def register_changed(rel, change, changed_lines=None, symbols_hit=None, reason=None):
+        rel = str(rel).replace("\\", "/").lstrip("./")
+        layer = module_layers.get(rel)
+        if layer is None and contract:
+            matched = dev_contract.match_layers(rel, contract)
+            layer = matched[0] if matched else None
+        if layer is None and not (root / rel).exists():
+            unknowns.append({
+                "kind": "change-not-found",
+                "id": rel,
+                "detail": "the changed path is not in the repository and matches no layer",
+                "next_step": "check the path spelling or add a layer glob",
+            })
+        entry = changes.setdefault(rel, {
+            "path": rel,
+            "change": change,
+            "layer": layer,
+            "changed_lines": [],
+            "symbols": [],
+        })
+        if changed_lines:
+            entry["changed_lines"] = sorted(set(entry["changed_lines"]) | set(changed_lines))
+        if symbols_hit:
+            entry["symbols"] = sorted(set(entry["symbols"]) | set(symbols_hit))
+        if reason and not entry.get("reason"):
+            entry["reason"] = reason
+        return entry
+
+    for item in _parse_unified_diff(diff or ""):
+        entry = register_changed(item["path"], item["change"],
+                                 changed_lines=item["changed_lines"],
+                                 reason="unified diff")
+        if item["removed_lines"]:
+            entry["removed_lines"] = item["removed_lines"]
+    for rel in requested:
+        in_model = rel in module_layers
+        layer_hit = bool(contract and dev_contract.match_layers(rel, contract))
+        register_changed(rel, "modified", reason="changed_files")
+        if (root / rel).exists() and not in_model and not layer_hit:
+            unknowns.append({
+                "kind": "change-not-in-model",
+                "id": rel,
+                "detail": "the file is not part of the source model and matches no layer",
+                "next_step": "add a layer glob or check the file type",
+            })
+    for symbol in wanted_symbols:
+        hits = _symbol_locations(model, root, symbol)
+        if not hits:
+            unknowns.append({
+                "kind": "symbol-not-found",
+                "id": symbol,
+                "detail": "no definition of this symbol was found in the model",
+                "next_step": "check the symbol spelling or add the file that defines it",
+            })
+            continue
+        for hit in hits:
+            register_changed(hit["path"], "symbol", changed_lines=[hit["line"]],
+                             symbols_hit=[symbol], reason="target symbol")
+
+    changed_paths = sorted(changes)
+    nodes, cone_truncated = _dependency_cone(model, changed_paths, depth)
+    if cone_truncated:
+        unknowns.append({
+            "kind": "cone-truncated",
+            "id": model_result["root"],
+            "detail": "the impact cone reached the %d node limit" % CONE_LIMIT,
+            "next_step": "raise depth/targets precision and rerun impact_analysis",
+        })
+    scoped_paths = sorted(nodes)
+    direct_consumers = sorted(node["path"] for node in nodes.values() if node["depth"] == 1)
+    affected_layers = sorted({node["layer"] for node in nodes.values() if node["layer"]})
+    boundaries = _affected_boundaries(contract, scoped_paths)
+    stores = _affected_data_stores(model, affected_layers, scoped_paths)
+    invariants = _affected_invariants(contract, scoped_paths)
+    tests = _relevant_tests(model, nodes)
+
+    core = _architecture_review_core(model_result, contract_result, root)
+    scoped = set(scoped_paths)
+    for violation in core["violations"]:
+        violation["in_cone"] = any(item["path"] in scoped for item in violation["evidence"])
+    in_scope = [item for item in core["violations"] if item["in_cone"]]
+    blocking_in_scope = [item for item in in_scope
+                         if item["severity"] in dev_contract.BLOCKING_SEVERITIES]
+    radius = _blast_radius(contract, nodes, affected_layers, boundaries, stores, in_scope)
+    probes = _rollback_probes(model, nodes, stores, tests, invariants)
+
+    for path_ in changed_paths:
+        entry = changes[path_]
+        evidence.append({
+            "path": path_,
+            "line": (entry["changed_lines"] or [None])[0],
+            "detail": "changed (%s)%s" % (
+                entry["change"],
+                ", layer %s" % entry["layer"] if entry["layer"] else ", no layer",
+            ),
+        })
+    for node in sorted(nodes.values(), key=lambda item: (item["depth"], item["path"])):
+        if node["depth"] == 0:
+            continue
+        evidence.append({
+            "path": node["path"],
+            "line": node["line"],
+            "detail": "consumer of %s at depth %d" % (node["via"], node["depth"]),
+        })
+    for item in blocking_in_scope:
+        for entry in item["evidence"]:
+            evidence.append({
+                "path": entry["path"],
+                "line": entry.get("line"),
+                "detail": "%s: %s" % (item["code"], entry["detail"]),
+            })
+    evidence.sort(key=lambda item: (item["path"], item.get("line") or 0, item["detail"]))
+    if len(evidence) > EVIDENCE_LIMIT:
+        evidence = evidence[:EVIDENCE_LIMIT]
+
+    unknowns.sort(key=lambda item: (item["kind"], item["id"]))
+    deduped = []
+    seen_unknowns = set()
+    for item in unknowns:
+        key = (item["kind"], item.get("id"))
+        if key in seen_unknowns:
+            continue
+        seen_unknowns.add(key)
+        deduped.append(item)
+    unknowns = deduped
+    if blocking_in_scope:
+        status = "FAIL"
+    elif unknowns or cone_truncated:
+        status = "UNKNOWN"
+    else:
+        status = "PASS"
+    return {
+        "status": status,
+        "root": model_result["root"],
+        "inputs": {
+            "changed_files": requested,
+            "symbols": wanted_symbols,
+            "diff_provided": bool(str(diff or "").strip()),
+            "depth": depth,
+        },
+        "changed": [changes[path_] for path_ in changed_paths],
+        "direct_consumers": direct_consumers,
+        "cone": {
+            "nodes": [nodes[path_] for path_ in sorted(
+                nodes, key=lambda item: (nodes[item]["depth"], item))],
+            "max_depth": max((node["depth"] for node in nodes.values()), default=0),
+            "limit": CONE_LIMIT,
+            "truncated": cone_truncated,
+        },
+        "affected_layers": affected_layers,
+        "affected_boundaries": boundaries,
+        "affected_data_stores": stores,
+        "affected_invariants": invariants,
+        "relevant_tests": tests,
+        "architecture": {
+            "status": core["status"],
+            "violations_total": len(core["violations"]),
+            "violations_in_scope": in_scope,
+            "unknowns": core["unknowns"],
+        },
+        "blast_radius": radius,
+        "rollback_probes": probes,
+        "unknowns": unknowns,
+        "unverified_claims": _impact_unverified_claims(),
+        "evidence": evidence,
+        "truncated": model_result["truncated"],
+        "model_digest": model_result["model_digest"],
+    }
+
+
 def dispatch(name, arguments):
     handlers = {
         "repo_map": repo_map,
         "system_model": system_model,
+        "architecture_review": architecture_review,
+        "impact_analysis": impact_analysis,
         "find_code": find_code,
         "compress_output": compress_output,
         "review_code": review_code,
@@ -1358,6 +2321,19 @@ def main():
     model = sub.add_parser("system-model")
     model.add_argument("path")
     model.add_argument("--contract", help="contract path relative to the repository root")
+    review = sub.add_parser("architecture-review")
+    review.add_argument("path")
+    review.add_argument("--contract", help="contract path relative to the repository root")
+    impact = sub.add_parser("impact-analysis")
+    impact.add_argument("path")
+    impact.add_argument("--changed", action="append",
+                        help="repository-relative changed file (repeatable)")
+    impact.add_argument("--diff-file", help="read a unified diff from this file")
+    impact.add_argument("--symbol", action="append",
+                        help="target symbol whose definition site is the change (repeatable)")
+    impact.add_argument("--depth", type=int, default=3,
+                        help="reverse-dependency depth, 1-10 (default 3)")
+    impact.add_argument("--contract", help="contract path relative to the repository root")
     find = sub.add_parser("find-code")
     find.add_argument("path")
     find.add_argument("query")
@@ -1373,6 +2349,15 @@ def main():
         result = repo_map(args.path)
     elif args.command == "system-model":
         result = system_model(args.path, contract_file=args.contract)
+    elif args.command == "architecture-review":
+        result = architecture_review(args.path, contract_file=args.contract)
+    elif args.command == "impact-analysis":
+        diff_text = None
+        if args.diff_file:
+            diff_text = Path(args.diff_file).read_text(encoding="utf-8")
+        result = impact_analysis(args.path, changed_files=args.changed, diff=diff_text,
+                                 symbols=args.symbol, depth=args.depth,
+                                 contract_file=args.contract)
     elif args.command == "find-code":
         result = find_code(args.path, args.query)
     elif args.command == "compress-output":

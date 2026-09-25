@@ -10,6 +10,8 @@
 |---|---|
 | `repo_map` | 代码库模块、导入关系与入口点地图。 |
 | `system_model` | 系统模型：模块、依赖、入口、测试映射、配置与数据归属，附带契约分层。 |
+| `architecture_review` | 按契约评审依赖规则、边界可见性与数据归属，逐条给出证据。 |
+| `impact_analysis` | 变更影响锥：消费者、受影响层与存储、映射测试、风险分级与回滚探针。 |
 | `find_code` | 符号与文本定位，结果有数量上限。 |
 | `compress_output` | 压缩长日志，保留错误、错误栈和首尾上下文。 |
 | `review_code` | 规则化代码评审，输出文件、行号、证据与建议。 |
@@ -22,7 +24,7 @@
 | `scaffold_skill` | 规划或生成最小技能脚手架，默认 dry-run。 |
 | `workflow_state` | 读取 `.workflow`，可选显式追加快照日志。 |
 
-十个工具只读；`run_checks` 必须显式 `allow_execute=true`，`scaffold_skill` /
+十二个工具只读；`run_checks` 必须显式 `allow_execute=true`，`scaffold_skill` /
 `workflow_state` 必须显式 `apply=true` 才写入。核心只用 Python 3.8+ 标准库，默认不联网。
 
 ### 架构契约
@@ -31,6 +33,14 @@
 边界、数据归属、不变量与风险权重。结果只给 `PASS` / `FAIL` / `UNKNOWN`，把还缺证据的
 未知项列进 `unknowns`，未执行的验证级别保留在 `unverified_claims`。schema、glob 规则与
 错误码见 `references/architecture-contract.md`。
+
+`architecture_review` 在这份契约上做评审：依赖规则、边界可见性与数据归属逐条产出
+文件、行号与严重级；`critical` / `high` 判 FAIL，`medium` / `low` 只告警，
+模型无法判定的部分进 `UNKNOWN`，不会被静默放行。
+
+`impact_analysis` 从 `changed_files`、unified diff 或目标符号出发，沿反向依赖走出一棵
+有上限的影响锥：直接消费者、受影响层与边界、数据存储、不变量、映射测试、
+可解释的风险分级与回滚探针；全程不执行任何命令。
 
 ## 安装
 
@@ -64,6 +74,8 @@ bash <技能目录>/yotta-dev-mcp/install.sh --agent codex
 ```bash
 python scripts/dev_engine.py repo-map .
 python scripts/dev_engine.py system-model .
+python scripts/dev_engine.py architecture-review .
+python scripts/dev_engine.py impact-analysis . --changed src/core/store.py
 python scripts/dev_engine.py find-code . "helper"
 python scripts/dev_engine.py review-code .
 python scripts/dev_engine.py mcp-doctor
@@ -77,5 +89,6 @@ python scripts/dev_engine.py mcp-doctor
 
 ## 当前版本
 
-`0.2.0` 开发中：在原有十二个确定性工具之上新增 `system_model` 与
-`.yotta/architecture.json` 架构契约。发布前 npm 的 `latest` 仍为 `0.1.1`。
+`0.2.0` 开发中：在原有十二个确定性工具之上新增 `system_model`、
+`architecture_review`、`impact_analysis` 与 `.yotta/architecture.json` 架构契约。
+发布前 npm 的 `latest` 仍为 `0.1.1`。

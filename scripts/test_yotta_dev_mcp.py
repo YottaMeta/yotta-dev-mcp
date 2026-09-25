@@ -76,7 +76,7 @@ class YottaDevMcpTest(unittest.TestCase):
         })
         self.assertEqual(response["result"]["resultType"], "complete")
 
-    def test_tools_list_has_thirteen_contracts(self):
+    def test_tools_list_has_fifteen_contracts(self):
         response = server.handle_message({
             "jsonrpc": "2.0",
             "id": 3,
@@ -87,6 +87,8 @@ class YottaDevMcpTest(unittest.TestCase):
         self.assertEqual(names, [
             "repo_map",
             "system_model",
+            "architecture_review",
+            "impact_analysis",
             "find_code",
             "compress_output",
             "review_code",
@@ -121,6 +123,52 @@ class YottaDevMcpTest(unittest.TestCase):
 
     def test_system_model_rejects_missing_path(self):
         response = self.call("system_model", {"path": str(self.root / "nope")})
+        self.assertTrue(response["result"]["isError"])
+
+    def test_architecture_review_tool(self):
+        (self.root / ".yotta").mkdir()
+        (self.root / ".yotta" / "architecture.json").write_text(json.dumps({
+            "version": 1,
+            "layers": [
+                {"id": "core", "paths": ["core/**"], "risk": "high"},
+                {"id": "boot", "paths": ["main.py"]},
+            ],
+            "rules": [
+                {"id": "core-no-boot", "type": "forbid-dependency", "from": "core",
+                 "to": "boot", "severity": "high", "claim": "core must not import boot"},
+            ],
+        }), encoding="utf-8")
+        (self.root / "core").mkdir()
+        (self.root / "core" / "leak.py").write_text(
+            "from main import helper\n", encoding="utf-8"
+        )
+        response = self.call("architecture_review", {"path": str(self.root)})
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertEqual(payload["violations"][0]["rule"], "core-no-boot")
+        self.assertEqual(payload["violations"][0]["evidence"][0]["path"], "core/leak.py")
+
+    def test_impact_analysis_tool(self):
+        (self.root / "core").mkdir()
+        (self.root / "core" / "util.py").write_text(
+            "def helper(value):\n    return value + 1\n", encoding="utf-8"
+        )
+        (self.root / "core" / "use.py").write_text(
+            "from core.util import helper\n", encoding="utf-8"
+        )
+        response = self.call("impact_analysis", {
+            "path": str(self.root),
+            "changed_files": ["core/util.py"],
+        })
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertFalse(response["result"]["isError"])
+        self.assertIn("core/use.py", payload["direct_consumers"])
+        nodes = {item["path"]: item for item in payload["cone"]["nodes"]}
+        self.assertEqual(nodes["core/use.py"]["depth"], 1)
+
+    def test_impact_analysis_requires_change_input(self):
+        response = self.call("impact_analysis", {"path": str(self.root)})
         self.assertTrue(response["result"]["isError"])
 
     def test_find_code_tool(self):
@@ -200,7 +248,7 @@ class YottaDevMcpTest(unittest.TestCase):
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         self.assertEqual(len(lines), 2)
         self.assertEqual(json.loads(lines[0])["result"]["serverInfo"]["name"], "yotta-dev-mcp")
-        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 13)
+        self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 15)
 
 
 if __name__ == "__main__":

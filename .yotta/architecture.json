@@ -50,8 +50,15 @@
       "id": "engine-entry",
       "layer": "engine",
       "paths": ["scripts/dev_engine.py"],
+      "visibility": "public",
+      "description": "public dispatch entry: the MCP protocol layer and the tests call the engine through it"
+    },
+    {
+      "id": "engine-internal",
+      "layer": "engine",
+      "paths": ["scripts/dev_rules.py"],
       "visibility": "internal",
-      "description": "single dispatch entry for the engine"
+      "description": "review rules stay engine-internal"
     }
   ],
   "invariants": [

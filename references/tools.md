@@ -30,6 +30,53 @@ and `model_digest`.
 Contract schema, glob rules, finding codes and import kinds are documented in
 `references/architecture-contract.md`.
 
+## architecture_review
+
+Input:
+
+- `path` (required): repository or source directory.
+- `max_files` (optional, default 2000): source file limit.
+- `contract_file` (optional): contract path relative to the repository root
+  (default `.yotta/architecture.json`).
+
+Output: `status` (`PASS` / `FAIL` / `UNKNOWN`), `contract`, `checked`
+(`rules` / `boundaries` / `data_stores` / `invariants`, each with a per-item
+`status` of `PASS` / `WARN` / `FAIL` / `UNKNOWN`), `violations`, `blocking_findings`,
+`advisory_findings`, `unknowns`, `unverified_claims`, `evidence`, `truncated` and
+`model_digest`.
+
+`critical` / `high` findings fail the review; `medium` / `low` stay advisory.
+Anything the model cannot decide becomes `UNKNOWN`; declared invariants that this
+tool cannot evaluate are listed in `unverified_claims` instead of being reported
+as passing. Read-only.
+
+## impact_analysis
+
+Input:
+
+- `path` (required): repository or source directory.
+- `changed_files` (optional): repository-relative changed files.
+- `diff` (optional): unified diff text; changed files and line numbers are parsed
+  from it, deleted files keep their declared layer.
+- `symbols` (optional): target symbols; their definition sites become the change.
+- `depth` (optional, default 3, 1-10): reverse-dependency depth.
+- `max_files` (optional, default 2000): source file limit.
+- `contract_file` (optional): contract path relative to the repository root.
+
+At least one of `changed_files`, `diff` or `symbols` is required.
+
+Output: `status`, `inputs`, `changed`, `direct_consumers`, `cone` (`nodes` with
+`depth` / `via` / `layer` / `is_test`, `max_depth`, `limit`, `truncated`),
+`affected_layers`, `affected_boundaries`, `affected_data_stores`,
+`affected_invariants`, `relevant_tests`, `architecture` (`status`,
+`violations_total`, `violations_in_scope`, `unknowns`), `blast_radius`
+(`level`, `score`, `capped`, `reasons`), `rollback_probes`, `unknowns`,
+`unverified_claims`, `evidence`, `truncated` and `model_digest`.
+
+`status` is `FAIL` when a blocking architecture violation sits inside the cone,
+`UNKNOWN` while anything is undecided, otherwise `PASS`. Read-only; no command is
+executed.
+
 ## find_code
 
 Input:

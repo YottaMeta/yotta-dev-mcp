@@ -1,5 +1,5 @@
-<p align="center"><img src="assets/banner.png" alt="YottaDev MCP banner" width="100%"></p>
-<h1 align="center">YottaDev MCP (yotta-dev-mcp)</h1>
+<p align="center"><img src="assets/banner.png" alt="YuanKai banner" width="100%"></p>
+<h1 align="center">YuanKai (yotta-dev-mcp)</h1>
 <p align="center"><b>Language</b>: English · <a href="README.zh-CN.md">中文</a></p>
 
 Deterministic local development tools exposed over a stdio MCP server.

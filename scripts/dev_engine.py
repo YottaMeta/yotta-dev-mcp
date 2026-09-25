@@ -20,7 +20,7 @@ from pathlib import Path
 
 from dev_rules import REVIEW_RULES
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 IGNORE_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",

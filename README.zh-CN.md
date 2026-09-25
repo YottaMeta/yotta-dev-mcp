@@ -1,5 +1,5 @@
-<p align="center"><img src="assets/banner.png" alt="开发能力 MCP banner" width="100%"></p>
-<h1 align="center">开发能力 MCP（yotta-dev-mcp）</h1>
+<p align="center"><img src="assets/banner.png" alt="元开 banner" width="100%"></p>
+<h1 align="center">元开（yotta-dev-mcp）</h1>
 <p align="center"><b>Language</b>: <a href="README.md">English</a> · 中文</p>
 
 把本地、确定性的开发工具做成 stdio MCP server，任何支持 MCP 的客户端接上即可使用。

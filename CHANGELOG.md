@@ -1,3 +1,14 @@
+## v0.2.2 (2026-09-26)
+
+新增工具分组 `--tools core|full`（与元忆同口径），供需要把工具表常驻上下文的宿主使用。
+
+- `core` = 5 工具：`repo_map` / `find_code` / `review_code` / `review_diff` / `verify_change`；紧凑 JSON schema 3,883 字符。
+- `full` = 全部 18 工具（默认，行为与 0.2.1 一致）；同一口径下 schema 13,230 字符。
+- 背景：产品侧实测 18 工具 `schemaChars 8174`，超过其 8,000 硬上限，无法默认常驻；core 档按同一比例约 2.4k，留有充足余量。
+- `core` 模式下调用 full 专属工具会返回明确提示（"属于 full 分组，请用 --tools full 重新启动"），不做静默失败。
+- `--help` / `--version` 支持；非法分组值以中文用法错误 + 退出码 2 拒绝。
+- 回归：新增 7 项分档用例（默认 full / core 列表与顺序 / core 拒绝 full 专属工具 / schema 预算 / 非法值拒绝 / stdio 两种端到端）；元开全量 189/189（1 skip）。
+
 # Changelog
 
 ## v0.2.1 (2026-09-25)

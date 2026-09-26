@@ -346,5 +346,63 @@ class YottaDevMcpTest(unittest.TestCase):
         self.assertEqual(len(json.loads(lines[1])["result"]["tools"]), 18)
 
 
+class ToolProfileTest(unittest.TestCase):
+    """v0.2.2：`--tools core|full` 工具分档（core 给常驻宿主，schema 需远低于宿主硬上限）。"""
+
+    def test_default_profile_is_full(self):
+        response = server.handle_message(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        self.assertEqual(len(response["result"]["tools"]), 18)
+
+    def test_core_profile_lists_exactly_five_tools(self):
+        response = server.handle_message(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "core")
+        names = [tool["name"] for tool in response["result"]["tools"]]
+        self.assertEqual(names, list(server.CORE_TOOL_NAMES))
+        self.assertEqual(
+            names, ["repo_map", "find_code", "review_code", "review_diff", "verify_change"])
+
+    def test_core_profile_rejects_full_only_tool(self):
+        response = server.handle_message({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "scan_secrets", "arguments": {}},
+        }, "core")
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("core", response["result"]["content"][0]["text"])
+        self.assertIn("scan_secrets", response["result"]["content"][0]["text"])
+
+    def test_core_profile_schema_budget(self):
+        core_chars = len(json.dumps(server.mcp_tools("core"), ensure_ascii=False))
+        full_chars = len(json.dumps(server.mcp_tools("full"), ensure_ascii=False))
+        # 宿主硬上限 8000 字符（full 实测 ~8.1k 超限）；core 实测约 4.1k，留足余量。
+        self.assertLessEqual(core_chars, 5000, core_chars)
+        self.assertLess(core_chars, full_chars)
+
+    def test_invalid_profile_rejected(self):
+        with self.assertRaises(ValueError):
+            server.normalize_tool_profile("tiny")
+
+    def test_stdio_tools_core(self):
+        script = Path(__file__).with_name("yotta_dev_mcp.py")
+        messages = [
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        ]
+        stdin = "".join(json.dumps(item) + "\n" for item in messages)
+        proc = subprocess.run(
+            [sys.executable, str(script), "--tools", "core"],
+            input=stdin, capture_output=True, text=True, timeout=20)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        tools = json.loads(proc.stdout.splitlines()[0])["result"]["tools"]
+        self.assertEqual(len(tools), 5)
+
+    def test_stdio_invalid_profile_exits_two(self):
+        script = Path(__file__).with_name("yotta_dev_mcp.py")
+        proc = subprocess.run(
+            [sys.executable, str(script), "--tools", "tiny"],
+            input="", capture_output=True, text=True, timeout=20)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("未知工具分组", proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

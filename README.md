@@ -126,8 +126,13 @@ python scripts/dev_engine.py mcp-doctor
 
 ## Current version
 
-`0.2.1` (2026-09-25) is a defect-fix release: `mcp_doctor` now covers Codex,
-WorkBuddy, OpenCode, Cursor and other hosts with a coverage report;
+`0.2.2` (2026-09-26) adds tool profiles. Start the server with `--tools core`
+for a five-tool set (`repo_map` / `find_code` / `review_code` / `review_diff` /
+`verify_change`, ~3.9k characters of compact JSON schema) so hosts that keep the
+tool table resident stay inside their schema budget; `--tools full` (default)
+keeps all 18 tools. Calling a full-only tool in `core` mode returns an explicit
+message instead of failing silently. Previous `0.2.1`: `mcp_doctor` covers
+Codex, WorkBuddy, OpenCode, Cursor and other hosts with a coverage report;
 `self_test(mode="installed")` is distribution-aware; `repo_map` resolves
 `from . import X`; `scan_secrets` filters path/hash/filename noise; and
 `review_code` ignores temporary directories.

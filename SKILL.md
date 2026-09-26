@@ -1,7 +1,7 @@
 ---
 name: yotta-dev-mcp
 description: 元开（yotta-dev-mcp）—— 本地、确定性的开发工具 MCP，把只读默认的开发能力暴露为 stdio MCP server：repo_map / system_model / architecture_review / impact_analysis / verify_change / self_test / run_adapter / find_code / compress_output / review_code / review_diff / mcp_doctor / scan_secrets / scan_dependencies / check_publish_readiness / run_checks / scaffold_skill / workflow_state。触发：让 AI 在陌生项目里先做结构盘点、构建系统模型或架构契约（.yotta/architecture.json）、按契约评审架构、分析改动影响锥与回归面、按验证阶梯产出证据账本、对元开自身做完整性 / 反证自测、探测或显式运行 import-linter / dependency-cruiser / Repomix 可选适配器、定位代码、评审改动、扫描密钥/依赖、检查发布就绪、运行白名单检查、生成脚手架或读取 .workflow 状态时；或用户说 元开 / 开发能力 MCP / yotta-dev-mcp / 代码库地图 / 系统模型 / 架构契约 / 架构评审 / 影响分析 / 验证账本 / 反证自测 / 代码评审 MCP / 适配器 等。边界：Python 3.8+ 标准库、离线默认；除 run_checks（显式 allow_execute）、verify_change 的 L2-L4 策略检查（显式 allow_execute）与 self_test 的测试子集（显式 allow_execute）、run_adapter 的 action=run（显式 allow_execute）、scaffold_skill / workflow_state 的显式 apply 外均为只读；不上传源码、不自动修改、不提交、不联网查询包是否存在、不自动安装或下载适配器。
-version: 0.2.1
+version: 0.2.2
 license: MIT
 ---
 
@@ -36,6 +36,18 @@ npx -y @yottameta/yotta-dev-mcp
 ```bash
 python scripts/yotta_dev_mcp.py
 ```
+
+工具分组（`--tools`，与元忆同口径）：
+
+```bash
+python scripts/yotta_dev_mcp.py --tools core   # 5 工具：repo_map / find_code / review_code / review_diff / verify_change
+python scripts/yotta_dev_mcp.py --tools full   # 18 工具（默认）
+```
+
+`core` 给「需要把工具表常驻在上下文里」的宿主用：schema 体积约为 `full` 的 29%
+（5 工具 3,883 字符 vs 18 工具 13,230 字符，紧凑 JSON 口径），适合默认启用；
+`full` 暴露全部工具，适合按需调用、不常驻的场景。`core` 模式下调用 full 专属工具会返回
+明确提示（提示用 `--tools full` 重启）。
 
 自动接入说明：AI 首次协助配置时，必须先展示目标配置文件、完整配置片段和影响，
 并获得用户明确同意后再写入 `mcpServers`。用户拒绝时不要写文件，直接提供上面的启动命令

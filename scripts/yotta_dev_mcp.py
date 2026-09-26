@@ -25,6 +25,25 @@ MCP_PROTOCOL_MODERN = "2026-07-28"
 MCP_PROTOCOL_LEGACY = "2025-11-25"
 SERVER_INFO = {"name": TOOL_NAME, "version": VERSION}
 
+# 工具分组（v0.2.2）：与元忆 `--tools core|full` 同口径。core 是给「需要在上下文里
+# 常驻工具表」的宿主用小档（5 工具，schema 远低于 8000 字符硬上限）；full 保持 18 工具。
+CORE_TOOL_NAMES = (
+    "repo_map",
+    "find_code",
+    "review_code",
+    "review_diff",
+    "verify_change",
+)
+TOOL_PROFILES = ("core", "full")
+DEFAULT_TOOL_PROFILE = "full"
+
+
+def normalize_tool_profile(value):
+    profile = str(value or "").strip().lower() or DEFAULT_TOOL_PROFILE
+    if profile not in TOOL_PROFILES:
+        raise ValueError("未知工具分组: %s（可用: core / full）" % value)
+    return profile
+
 
 def _text_result(payload):
     return {
@@ -63,7 +82,7 @@ TOOL_HANDLERS = {
 }
 
 
-def mcp_tools():
+def _all_tools():
     return [
         {
             "name": "repo_map",
@@ -521,6 +540,15 @@ def mcp_tools():
     ]
 
 
+def mcp_tools(profile=None):
+    """按工具分档返回 tools/list 内容（core 5 个 / full 18 个）。"""
+    tools = _all_tools()
+    if normalize_tool_profile(profile) == "core":
+        by_name = {tool["name"]: tool for tool in tools}
+        return [by_name[name] for name in CORE_TOOL_NAMES]
+    return tools
+
+
 def _req_version(params):
     meta = (params or {}).get("_meta") or {}
     return meta.get("io.modelcontextprotocol/protocolVersion")
@@ -548,7 +576,7 @@ def _unsupported_version(rid, protocol_version):
     }
 
 
-def handle_message(msg):
+def handle_message(msg, tool_profile=None):
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
         rid = msg.get("id") if isinstance(msg, dict) else None
         return {"jsonrpc": "2.0", "id": rid,
@@ -578,7 +606,9 @@ def handle_message(msg):
                         "verify_change for change-centered evidence, self_test for integrity "
                         "checks, and run_adapter to probe or explicitly run optional local "
                         "architecture adapters. Tools are offline and read-only unless an "
-                        "explicit write or execute flag is set."
+                        "explicit write or execute flag is set. Current tool profile: "
+                        + normalize_tool_profile(tool_profile)
+                        + " (start with --tools core|full)."
                     ),
                 }, (3600000, "public")),
             }
@@ -588,11 +618,20 @@ def handle_message(msg):
             return {
                 "jsonrpc": "2.0",
                 "id": rid,
-                "result": _modern_ok({"tools": mcp_tools()}, (300000, "public")),
+                "result": _modern_ok({"tools": mcp_tools(tool_profile)}, (300000, "public")),
             }
         if method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments") or {}
+            if (normalize_tool_profile(tool_profile) == "core"
+                    and name not in CORE_TOOL_NAMES):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": rid,
+                    "result": _modern_ok(_tool_error(
+                        "工具 %s 属于 full 分组，当前以 --tools core 启动。"
+                        "需要完整工具集时请用 --tools full 重新启动。" % name)),
+                }
             handler = TOOL_HANDLERS.get(name)
             if not handler:
                 return {
@@ -626,10 +665,16 @@ def handle_message(msg):
     if method == "ping":
         return {"jsonrpc": "2.0", "id": rid, "result": {}}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": mcp_tools()}}
+        return {"jsonrpc": "2.0", "id": rid,
+                "result": {"tools": mcp_tools(tool_profile)}}
     if method == "tools/call":
         name = params.get("name")
         arguments = params.get("arguments") or {}
+        if (normalize_tool_profile(tool_profile) == "core"
+                and name not in CORE_TOOL_NAMES):
+            return {"jsonrpc": "2.0", "id": rid, "result": _tool_error(
+                "工具 %s 属于 full 分组，当前以 --tools core 启动。"
+                "需要完整工具集时请用 --tools full 重新启动。" % name)}
         handler = TOOL_HANDLERS.get(name)
         if not handler:
             return {
@@ -642,7 +687,42 @@ def handle_message(msg):
             "error": {"code": -32601, "message": "Method not found: " + str(method)}}
 
 
+def parse_args(argv):
+    """解析启动参数：`--tools core|full`（默认 full）、`--version`、`--help`。"""
+    profile = DEFAULT_TOOL_PROFILE
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--tools":
+            index += 1
+            if index >= len(argv):
+                sys.stderr.write("用法错误: --tools 需要一个值（core / full）\n")
+                raise SystemExit(2)
+            raw = argv[index]
+        elif arg.startswith("--tools="):
+            raw = arg.split("=", 1)[1]
+        elif arg in ("--version", "-v"):
+            print("%s %s" % (TOOL_NAME, VERSION))
+            raise SystemExit(0)
+        elif arg in ("--help", "-h"):
+            print("用法: yotta-dev-mcp [--tools core|full]")
+            print("  core: 5 工具（%s）" % " / ".join(CORE_TOOL_NAMES))
+            print("  full: 18 工具（默认）")
+            raise SystemExit(0)
+        else:
+            sys.stderr.write("用法错误: 未知参数 %s\n" % arg)
+            raise SystemExit(2)
+        try:
+            profile = normalize_tool_profile(raw)
+        except ValueError as exc:
+            sys.stderr.write("用法错误: %s\n" % exc)
+            raise SystemExit(2)
+        index += 1
+    return profile
+
+
 def main():
+    tool_profile = parse_args(sys.argv[1:])
     try:
         sys.stdin.reconfigure(encoding="utf-8")
         sys.stdout.reconfigure(encoding="utf-8")
@@ -659,7 +739,7 @@ def main():
             response = {"jsonrpc": "2.0", "id": None,
                         "error": {"code": -32700, "message": "parse error"}}
         else:
-            response = handle_message(message)
+            response = handle_message(message, tool_profile)
         if response is not None:
             sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             sys.stdout.flush()

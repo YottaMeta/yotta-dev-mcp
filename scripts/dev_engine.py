@@ -41,7 +41,7 @@ from dev_model import (
 )
 from dev_rules import REVIEW_RULES
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 
 

@@ -114,10 +114,15 @@ python scripts/dev_engine.py mcp-doctor
 
 ## 当前版本
 
-`0.2.1`（2026-09-25）是缺陷修复批次：`mcp_doctor` 覆盖 Codex / WorkBuddy /
-OpenCode / Cursor 等宿主并返回 coverage；`self_test(mode="installed")`
-按分发形态判断 banner；`repo_map` 修复 `from . import X`；`scan_secrets`
-过滤路径 / 哈希 / 文件名噪声；`review_code` 忽略临时目录。
+`0.2.2`（2026-09-26）新增工具分组：用 `--tools core` 启动只暴露 5 个工具
+（`repo_map` / `find_code` / `review_code` / `review_diff` / `verify_change`，
+紧凑 JSON schema 约 3.9k 字符），供需要把工具表常驻上下文的宿主留在自己的
+schema 预算内；`--tools full`（默认）保持全部 18 个工具。core 模式下调用
+full 专属工具会返回明确提示，不做静默失败。上一版 `0.2.1`：`mcp_doctor`
+覆盖 Codex / WorkBuddy / OpenCode / Cursor 等宿主并返回 coverage；
+`self_test(mode="installed")` 按分发形态判断 banner；`repo_map` 修复
+`from . import X`；`scan_secrets` 过滤路径 / 哈希 / 文件名噪声；
+`review_code` 忽略临时目录。
 
 `0.2.0`（2026-09-25）在原有十二个确定性工具之上新增 `system_model`、
 `architecture_review`、`impact_analysis`、`verify_change`、`self_test`、

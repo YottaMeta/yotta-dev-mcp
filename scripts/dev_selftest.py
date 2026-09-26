@@ -52,22 +52,23 @@ def _protocol_tool_contracts(source_text):
     tree = ast.parse(source_text)
     function = None
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "mcp_tools":
+        # v0.2.2 起工具清单字面量在 _all_tools()；mcp_tools(profile) 只做分档过滤。
+        if isinstance(node, ast.FunctionDef) and node.name in ("_all_tools", "mcp_tools"):
             function = node
             break
     if function is None:
-        raise ValueError("mcp_tools() not found")
+        raise ValueError("tool list function not found")
     list_node = None
     for node in ast.walk(function):
         if isinstance(node, ast.Return) and isinstance(node.value, ast.List):
             list_node = node.value
             break
     if list_node is None:
-        raise ValueError("mcp_tools() does not return a literal tool list")
+        raise ValueError("tool list function does not return a literal tool list")
     contracts = []
     for element in list_node.elts:
         if not isinstance(element, ast.Dict):
-            raise ValueError("mcp_tools() contains a non-literal tool entry")
+            raise ValueError("tool list contains a non-literal tool entry")
         values = {}
         for key, value in zip(element.keys, element.values):
             if _string_constant(key):

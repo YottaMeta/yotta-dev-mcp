@@ -1,3 +1,23 @@
+# Changelog
+
+## v0.2.4 (2026-10-31)
+
+外部缺陷报告修复批次：
+
+- `architecture_review`：UTF-8 BOM 解码修正；规则零证据（`decided_imports=0`）改判
+  `UNKNOWN` 并输出 `rule-no-evidence` / `rule-no-source-modules`。
+- `review_code` / `review_diff`：`eval-exec` 排除 `.exec(`；单行字符串 / 注释遮罩；
+  新增 `.review-allowlist.json`（或 `.yotta/review-allowlist.json`）精确豁免
+  （path + rule + line + reason，无通配符，非法配置 fail-closed）。
+- legacy `initialize` 返回当前工具档位 instructions；SKILL.md 增加运行期档位自检。
+- `repo_map` / `review_code` 忽略 `temp` / `tmp` / `.yottameta` / `_bak*` /
+  `vendor` / `third_party`。
+- `scan_secrets`：补 6-7 字符弱口令规则并去重高熵重复；`find_code` 支持
+  `def ` / `class ` / `function ` 前缀。
+- `self_test` source 档增加 SKILL.md「当前版本」正文检查；SKILL.md / CHANGELOG
+  版本节对齐。
+- 回归：P0 / P1 / P2 新增用例；全量测试基线 176（1 skip）。
+
 ## v0.2.3 (2026-10-01)
 
 - 安装器卫生批次：`bin/install.js` / `install.sh` 统一（未知参数报错 exit 2、`--help` / `--version`、残留清理白名单、嵌套载荷保留）；由模板单一真源渲染，接入漂移门禁。
@@ -13,8 +33,6 @@
 - `core` 模式下调用 full 专属工具会返回明确提示（"属于 full 分组，请用 --tools full 重新启动"），不做静默失败。
 - `--help` / `--version` 支持；非法分组值以中文用法错误 + 退出码 2 拒绝。
 - 回归：新增 7 项分档用例（默认 full / core 列表与顺序 / core 拒绝 full 专属工具 / schema 预算 / 非法值拒绝 / stdio 两种端到端）；元开全量 189/189（1 skip）。
-
-# Changelog
 
 ## v0.2.1 (2026-09-25)
 
@@ -38,7 +56,7 @@
   `file://` 百分号编码路径、常见二进制 / 源码 / 文档后缀、带 `sha*` / hash /
   checksum / digest / integrity 上下文的 32/40/64/128 位十六进制；
   `api-key` / token / AWS / 私钥规则不放宽，真随机高熵 token 仍会命中。
-- `review_code` / `repo_map` 共用忽略规则：新增 `.workflow` / `.codex` /
+- `review_code` / `repo_map` 共用目录排除规则：新增 `.workflow` / `.codex` /
   `.cursor` / `.claude` / `.agents` / `scratch` / `_probe` / `probe` /
   `sandbox` / `debug` 等目录与 `probe_*` / `_probe_*` / `scratch_*` /
   `tmp_*` / `temp_*` / `*_tmp` 文件名兜底；`scan_secrets` 仍扫描全部文件，

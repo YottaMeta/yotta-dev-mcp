@@ -179,6 +179,10 @@ class DevEngineTest(unittest.TestCase):
         self.assertIn("definition", kinds)
         self.assertIn("reference", kinds)
 
+        prefixed = dev_engine.find_code(str(self.root), "def helper")
+        prefixed_kinds = {item["kind"] for item in prefixed["matches"]}
+        self.assertIn("definition", prefixed_kinds)
+
     def test_find_code_respects_max_results(self):
         result = dev_engine.find_code(str(self.root), "helper", max_results=1)
         self.assertEqual(len(result["matches"]), 1)
@@ -229,6 +233,83 @@ class DevEngineTest(unittest.TestCase):
         result = dev_engine.review_code(str(clean))
         self.assertEqual(result["findings"], [])
 
+    def test_review_code_ignores_literals_but_keeps_real_code(self):
+        sample = self.root / "sample.ts"
+        sample.write_text(
+            "const m = /^segment:(\\d+)$/.exec(mid);\n"
+            "const note = \"TODO: this is a string\";\n"
+            "// TODO: this is a real comment\n"
+            "eval(value);\n",
+            encoding="utf-8",
+        )
+        result = dev_engine.review_code(str(sample))
+        keys = {(item["line"], item["rule"]) for item in result["findings"]}
+        self.assertNotIn((1, "eval-exec"), keys)
+        self.assertNotIn((2, "todo-comment"), keys)
+        self.assertIn((3, "todo-comment"), keys)
+        self.assertIn((4, "eval-exec"), keys)
+
+    def test_review_code_allowlist_suppresses_exact_match(self):
+        write_tree(self.root, {
+            "src/app.py": "try:\n    pass\nexcept:\n    pass\n",
+            ".yotta/review-allowlist.json": json.dumps({
+                "version": 1,
+                "entries": [{
+                    "path": "src/app.py",
+                    "rule": "bare-except",
+                    "line": 3,
+                    "reason": "intentional fixture",
+                }],
+            }),
+        })
+        result = dev_engine.review_code(str(self.root))
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(result["suppressed"], 1)
+        self.assertEqual(result["suppressed_findings"][0]["reason"], "intentional fixture")
+
+    def test_review_code_root_allowlist_suppresses_exact_match(self):
+        write_tree(self.root, {
+            "src/app.py": "try:\n    pass\nexcept:\n    pass\n",
+            ".review-allowlist.json": json.dumps({
+                "version": 1,
+                "entries": [{
+                    "path": "src/app.py",
+                    "rule": "bare-except",
+                    "line": 3,
+                    "reason": "intentional fixture",
+                }],
+            }),
+        })
+        result = dev_engine.review_code(str(self.root))
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(result["suppressed"], 1)
+
+    def test_review_code_allowlist_does_not_match_wrong_line(self):
+        write_tree(self.root, {
+            "src/app.py": "try:\n    pass\nexcept:\n    pass\n",
+            ".yotta/review-allowlist.json": json.dumps({
+                "version": 1,
+                "entries": [{
+                    "path": "src/app.py",
+                    "rule": "bare-except",
+                    "line": 2,
+                    "reason": "wrong line on purpose",
+                }],
+            }),
+        })
+        result = dev_engine.review_code(str(self.root))
+        self.assertEqual(result["suppressed"], 0)
+        self.assertTrue(any(item["rule"] == "bare-except" for item in result["findings"]))
+
+    def test_review_code_allowlist_invalid_json_is_reported(self):
+        write_tree(self.root, {
+            "src/app.py": "except:\n",
+            ".yotta/review-allowlist.json": "{not valid json",
+        })
+        result = dev_engine.review_code(str(self.root))
+        self.assertTrue(result["allowlist_errors"])
+        self.assertTrue(any(item["rule"] == "bare-except" for item in result["findings"]))
+
     def test_review_code_ignores_workflow_scratch_and_probe_dirs(self):
         write_tree(self.root, {
             "src/app.py": "print('real')\n",
@@ -239,6 +320,19 @@ class DevEngineTest(unittest.TestCase):
         result = dev_engine.review_code(str(self.root))
         paths = {item["path"] for item in result["findings"]}
         self.assertEqual(paths, {"src/app.py"})
+
+    def test_review_code_ignores_temp_backup_and_vendor_dirs(self):
+        write_tree(self.root, {
+            "src/app.py": "VALUE = 1\n",
+            "temp/gh-clone/a.py": "except:\n",
+            "tmp/b.py": "except:\n",
+            ".yottameta/tmp/dump.py": "except:\n",
+            "_bak_20260731_src/c.py": "except:\n",
+            "vendor/d.py": "except:\n",
+            "third_party/e.py": "except:\n",
+        })
+        result = dev_engine.review_code(str(self.root))
+        self.assertEqual(result["findings"], [])
 
     def test_repo_map_ignores_workflow_scratch_and_probe_dirs(self):
         write_tree(self.root, {
@@ -253,6 +347,22 @@ class DevEngineTest(unittest.TestCase):
         self.assertFalse(any(path.startswith(".workflow/") for path in paths))
         self.assertFalse(any(path.startswith("_probe/") for path in paths))
         self.assertFalse(any(path.startswith("scratch/") for path in paths))
+
+    def test_repo_map_ignores_temp_backup_and_vendor_dirs(self):
+        write_tree(self.root, {
+            "src/app.py": "VALUE = 1\n",
+            "temp/gh-clone/a.py": "VALUE = 1\n",
+            "tmp/b.py": "VALUE = 1\n",
+            ".yottameta/tmp/dump.py": "VALUE = 1\n",
+            "_bak_20260731_src/c.py": "VALUE = 1\n",
+            "vendor/d.py": "VALUE = 1\n",
+            "third_party/e.py": "VALUE = 1\n",
+        })
+        result = dev_engine.repo_map(str(self.root))
+        paths = {item["path"] for item in result["modules"]}
+        self.assertIn("src/app.py", paths)
+        for prefix in ("temp/", "tmp/", ".yottameta/", "_bak_", "vendor/", "third_party/"):
+            self.assertFalse(any(path.startswith(prefix) for path in paths), prefix)
 
     def test_review_diff_only_reviews_added_lines(self):
         diff_text = (
@@ -340,6 +450,20 @@ class DevEngineTest(unittest.TestCase):
         result = dev_engine.scan_secrets(text='VALUE = "%s"\n' % token)
         rules = {item["rule"] for item in result["findings"]}
         self.assertIn("high-entropy-token", rules)
+
+    def test_scan_secrets_detects_weak_password(self):
+        result = dev_engine.scan_secrets(text='password = "hunter2"\n')
+        rules = {item["rule"] for item in result["findings"]}
+        self.assertIn("weak-password", rules)
+        for item in result["findings"]:
+            self.assertNotIn("hunter2", item["evidence"])
+
+    def test_scan_secrets_deduplicates_specific_and_high_entropy(self):
+        token = "Q7vN2mK9pL4xR8sT1uW6yA3bC5dE0fG2hJ7kM9nP"
+        result = dev_engine.scan_secrets(text='API_KEY = "%s"\n' % token)
+        rules = [item["rule"] for item in result["findings"]]
+        self.assertIn("api-key", rules)
+        self.assertNotIn("high-entropy-token", rules)
 
     def test_scan_dependencies_reports_lockfile_and_unpinned(self):
         (self.root / "package.json").write_text(
@@ -781,6 +905,55 @@ class ArchitectureReviewTest(unittest.TestCase):
         rule_ids = [item["id"] for item in result["checked"]["rules"]]
         self.assertEqual(rule_ids, ["core-no-ui", "api-allow-core"])
         self.assertTrue(all(item["status"] == "PASS" for item in result["checked"]["rules"]))
+
+    def test_review_detects_violation_in_utf8_bom_source(self):
+        self.write_contract(architecture_fixture_contract())
+        leak = self.root / "src" / "core" / "leak_bom.py"
+        leak.parent.mkdir(parents=True, exist_ok=True)
+        leak.write_text("from src.ui.view import VALUE\n", encoding="utf-8-sig")
+        result = dev_engine.architecture_review(str(self.root))
+        self.assertEqual(result["status"], "FAIL")
+        violation = next(item for item in result["violations"]
+                         if item["code"] == "rule-forbid-dependency")
+        self.assertEqual(violation["evidence"][0]["path"], "src/core/leak_bom.py")
+
+    def test_review_reads_utf8_bom_contract(self):
+        path = self.write_contract(architecture_fixture_contract())
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text, encoding="utf-8-sig")
+        result = dev_engine.architecture_review(str(self.root))
+        self.assertTrue(result["contract"]["present"])
+        self.assertNotIn("contract-invalid-json",
+                         {item["kind"] for item in result["unknowns"]})
+
+    def test_review_zero_evidence_rule_is_unknown(self):
+        self.write_contract(architecture_fixture_contract())
+        (self.root / "src" / "core" / "store.py").unlink()
+        (self.root / "src" / "core" / "util.py").unlink()
+        result = dev_engine.architecture_review(str(self.root))
+        rule = next(item for item in result["checked"]["rules"]
+                    if item["id"] == "core-no-ui")
+        self.assertEqual(rule["status"], "UNKNOWN")
+        self.assertEqual(rule["decided_imports"], 0)
+        self.assertIn("rule-no-evidence",
+                      {item["kind"] for item in result["unknowns"]})
+        self.assertEqual(result["status"], "UNKNOWN")
+
+    def test_review_missing_source_layer_is_unknown(self):
+        contract = architecture_fixture_contract()
+        contract["layers"].append({"id": "ghost", "paths": ["ghost/**"]})
+        contract["rules"] = [{
+            "id": "ghost-no-ui",
+            "type": "forbid-dependency",
+            "from": "ghost",
+            "to": "ui",
+            "severity": "high",
+        }]
+        self.write_contract(contract)
+        result = dev_engine.architecture_review(str(self.root))
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertIn("rule-no-source-modules",
+                      {item["kind"] for item in result["unknowns"]})
 
     def test_review_fails_on_seeded_forbidden_dependency(self):
         self.write_contract(architecture_fixture_contract())
@@ -1453,7 +1626,7 @@ class SelfTestTest(unittest.TestCase):
         ids = {item["id"] for item in result["checks"]}
         self.assertEqual(
             ids,
-            {"files", "versions", "tool-contracts", "write-gates",
+            {"files", "versions", "skill-version-body", "tool-contracts", "write-gates",
              "verifier-counterexamples"},
         )
         self.assertEqual(self.check(result, "verifier-counterexamples")["status"], "PASS")
@@ -1521,6 +1694,18 @@ class SelfTestTest(unittest.TestCase):
         entry = self.check(result, "versions")
         self.assertEqual(entry["status"], "FAIL")
         self.assertIn("version-mismatch", {item["code"] for item in entry["evidence"]})
+
+    def test_self_test_detects_skill_version_body_drift(self):
+        target = self.copy_source_repo()
+        skill = target / "SKILL.md"
+        text = skill.read_text(encoding="utf-8")
+        skill.write_text(text.replace("- v0.2.4", "- v0.0.1"), encoding="utf-8")
+        result = dev_engine.self_test(str(target))
+        self.assertEqual(result["status"], "FAIL")
+        entry = self.check(result, "skill-version-body")
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertIn("version-section-drift",
+                      {item["code"] for item in entry["evidence"]})
 
     def test_self_test_detects_tool_name_drift(self):
         target = self.copy_source_repo()

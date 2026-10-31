@@ -284,6 +284,33 @@ def _self_test_version_check(root, mode):
         }], "align package, SKILL, CHANGELOG, server and engine versions"
     return "PASS", [], None
 
+def _self_test_skill_version_body(root):
+    skill = root / "SKILL.md"
+    if not skill.is_file():
+        return "UNKNOWN", [{
+            "code": "skill-missing", "path": "SKILL.md",
+            "detail": "SKILL.md is missing",
+        }], "restore SKILL.md"
+    text = _read_text(skill)
+    version = _frontmatter_version(text)
+    if not version:
+        return "FAIL", [{
+            "code": "missing-version", "path": "SKILL.md",
+            "detail": "SKILL.md has no version field",
+        }], "restore a valid SKILL.md version"
+    section = re.search(r"(?ms)^##\s+当前版本\s*$(.*?)(?=^##\s+|\Z)", text)
+    if not section:
+        return "UNKNOWN", [{
+            "code": "version-section-missing", "path": "SKILL.md",
+            "detail": "SKILL.md has no 当前版本 section",
+        }], "add a 当前版本 section"
+    if not re.search(r"(?m)^\s*-\s*v?%s\b" % re.escape(version), section.group(1)):
+        return "FAIL", [{
+            "code": "version-section-drift", "path": "SKILL.md",
+            "detail": "current version %s is not listed in 当前版本" % version,
+        }], "add the current version to 当前版本"
+    return "PASS", [], None
+
 def _self_test_tool_contracts(root):
     protocol_path = root / "scripts" / "yotta_dev_mcp.py"
     engine_path = root / "scripts" / "dev_engine.py"
@@ -420,6 +447,15 @@ def self_test(path, mode="auto", allow_execute=False, timeout=120):
     checks = [files_check, version_check]
     unverified = []
     if mode == "source":
+        body_status, body_evidence, body_next = _self_test_skill_version_body(root)
+        checks.append({
+            "id": "skill-version-body",
+            "status": body_status,
+            "severity": "high",
+            "claim": "SKILL.md current-version section lists the frontmatter version",
+            "evidence": body_evidence,
+            "next_step": body_next,
+        })
         tool_status, tool_evidence, tool_next = _self_test_tool_contracts(root)
         checks.append({
             "id": "tool-contracts",

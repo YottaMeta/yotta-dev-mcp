@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "path": "yotta_dev_mcp.py",
+      "rule": "debug-print",
+      "line": 710,
+      "reason": "CLI --version output"
+    },
+    {
+      "path": "yotta_dev_mcp.py",
+      "rule": "debug-print",
+      "line": 713,
+      "reason": "CLI --help usage line"
+    },
+    {
+      "path": "yotta_dev_mcp.py",
+      "rule": "debug-print",
+      "line": 714,
+      "reason": "CLI --help core profile line"
+    },
+    {
+      "path": "yotta_dev_mcp.py",
+      "rule": "debug-print",
+      "line": 715,
+      "reason": "CLI --help full profile line"
+    }
+  ]
+}

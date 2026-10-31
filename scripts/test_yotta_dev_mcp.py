@@ -50,6 +50,23 @@ class YottaDevMcpTest(unittest.TestCase):
         self.assertEqual(result["serverInfo"]["name"], "yotta-dev-mcp")
         self.assertEqual(result["serverInfo"]["version"], server.VERSION)
         self.assertIn("tools", result["capabilities"])
+        self.assertIn("full", result["instructions"])
+        self.assertIn("18", result["instructions"])
+
+    def test_legacy_initialize_reports_core_profile(self):
+        response = server.handle_message({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"},
+            },
+        }, "core")
+        instructions = response["result"]["instructions"]
+        self.assertIn("core", instructions)
+        self.assertIn("5", instructions)
 
     def test_modern_discover(self):
         response = server.handle_message({

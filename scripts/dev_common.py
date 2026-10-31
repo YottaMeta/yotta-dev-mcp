@@ -13,7 +13,11 @@ IGNORE_DIRS = {
     ".workflow", ".codex", ".cursor", ".claude", ".agents",
     "scratch", "_scratch", "_probe", "probe", "probes",
     "sandbox", ".sandbox", "debug", "_debug",
+    "temp", "tmp", ".yottameta", "vendor", "third_party",
 }
+IGNORE_DIR_PATTERNS = (
+    re.compile(r"(?i)^_bak(?:[_-].*)?$"),
+)
 IGNORE_TEMP_FILE_RE = re.compile(
     r"(?i)^(?:probe[_-].*|_probe[_-].*|scratch[_-].*|_scratch[_-].*|tmp_.*|temp_.*|.*_tmp)"
     r"\.(?:py|js|jsx|mjs|cjs|ts|tsx|sh|ps1|go|rs|java|kt|kts|rb|php)$"
@@ -83,6 +87,12 @@ def source_exts():
     return set(SOURCE_EXTS)
 
 
+def _is_ignored_dir(name):
+    return name in IGNORE_DIRS or any(
+        pattern.match(name) for pattern in IGNORE_DIR_PATTERNS
+    )
+
+
 def _json_safe(value):
     if isinstance(value, Path):
         return str(value)
@@ -100,7 +110,7 @@ def _read_text(path):
     data = path.read_bytes()
     if b"\x00" in data[:4096]:
         raise ValueError("二进制文件不参与文本扫描: %s" % path)
-    return data.decode("utf-8", errors="replace")
+    return data.decode("utf-8-sig", errors="replace")
 
 
 def _iter_files(root, extensions=None, max_files=5000, all_files=False, ignore_temp=True):
@@ -108,7 +118,7 @@ def _iter_files(root, extensions=None, max_files=5000, all_files=False, ignore_t
     extensions = set(extensions or TEXT_EXTS)
     count = 0
     for current, dirs, files in os.walk(str(root)):
-        dirs[:] = sorted(d for d in dirs if d not in IGNORE_DIRS)
+        dirs[:] = sorted(d for d in dirs if not _is_ignored_dir(d))
         for name in sorted(files):
             if ignore_temp and IGNORE_TEMP_FILE_RE.match(name):
                 continue

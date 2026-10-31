@@ -28,6 +28,10 @@ def _review_rules(contract, model, unknown_sink, violation_sink):
     checked = []
     for rule in contract["rules"]:
         severity = rule.get("severity") or dev_contract.RULE_DEFAULT_SEVERITY
+        source_modules = [
+            item["id"] for item in model["modules"]
+            if module_layers.get(item["id"]) == rule["from"]
+        ]
         violations = 0
         undecided = 0
         decisive = 0
@@ -82,6 +86,24 @@ def _review_rules(contract, model, unknown_sink, violation_sink):
             status = "WARN"
         elif undecided:
             status = "UNKNOWN"
+        elif decisive == 0:
+            status = "UNKNOWN"
+            if source_modules:
+                unknown_sink.append({
+                    "kind": "rule-no-evidence",
+                    "id": rule["id"],
+                    "rule": rule["id"],
+                    "detail": "the from layer has modules but no decisive import was found",
+                    "next_step": "add an import that exercises this rule or remove the rule",
+                })
+            else:
+                unknown_sink.append({
+                    "kind": "rule-no-source-modules",
+                    "id": rule["id"],
+                    "rule": rule["id"],
+                    "detail": "the from layer has no modules to review",
+                    "next_step": "add modules to the from layer or remove the rule",
+                })
         else:
             status = "PASS"
         checked.append({
@@ -92,6 +114,7 @@ def _review_rules(contract, model, unknown_sink, violation_sink):
             "severity": severity,
             "claim": rule.get("claim"),
             "status": status,
+            "source_modules": len(source_modules),
             "decided_imports": decisive,
             "violations": violations,
             "undecided_imports": undecided,

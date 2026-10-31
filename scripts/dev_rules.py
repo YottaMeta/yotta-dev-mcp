@@ -12,7 +12,7 @@ import re
 REVIEW_RULES = [
     ("bare-except", "medium", re.compile(r"^\s*except\s*:"),
      "Catch a specific exception instead of a bare except."),
-    ("eval-exec", "high", re.compile(r"\b(?:eval|exec)\s*\("),
+    ("eval-exec", "high", re.compile(r"(?<![\w.$])(?:eval|exec)\s*\("),
      "Avoid dynamic evaluation; use explicit parsing or dispatch."),
     ("shell-true", "high", re.compile(r"\bshell\s*=\s*True\b"),
      "Do not invoke a shell with untrusted input; pass an argument list."),

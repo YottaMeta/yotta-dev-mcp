@@ -660,6 +660,11 @@ def handle_message(msg, tool_profile=None):
                 "protocolVersion": MCP_PROTOCOL_LEGACY,
                 "capabilities": {"tools": {}},
                 "serverInfo": SERVER_INFO,
+                "instructions": (
+                    "yotta-dev-mcp exposes deterministic local development tools. "
+                    "Current tool profile: %s (%d tools). Use --tools full to expose all tools."
+                    % (normalize_tool_profile(tool_profile), len(mcp_tools(tool_profile)))
+                ),
             },
         }
     if method == "ping":

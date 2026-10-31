@@ -6,6 +6,7 @@ import json
 import hashlib
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,33 @@ def write_tree(root, files):
         path = Path(root) / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+
+
+def make_link_or_skip(testcase, source, link):
+    try:
+        os.symlink(str(source), str(link))
+        return "symlink"
+    except (OSError, NotImplementedError):
+        try:
+            os.link(str(source), str(link))
+            return "hardlink"
+        except (OSError, NotImplementedError):
+            testcase.skipTest("symlink/hardlink is not available on this host")
+
+
+def make_dir_link_or_skip(testcase, source, link):
+    try:
+        os.symlink(str(source), str(link), target_is_directory=True)
+        return "symlink"
+    except (OSError, NotImplementedError):
+        if os.name == "nt":
+            proc = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(source)],
+                capture_output=True, text=True,
+            )
+            if proc.returncode == 0:
+                return "junction"
+        testcase.skipTest("directory symlink/junction is not available on this host")
 
 
 def architecture_fixture_files():
@@ -387,6 +415,50 @@ class DevEngineTest(unittest.TestCase):
         self.assertEqual([item["rule"] for item in risky["findings"]], ["eval-exec"])
         self.assertEqual(risky["findings"][0]["line"], 1)
 
+    def test_review_diff_rejects_option_like_base(self):
+        if shutil.which("git") is None:
+            self.skipTest("git is not available on this host")
+        repo = self.root / "diff-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Test"],
+            check=True,
+        )
+        (repo / "a.py").write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+        (repo / "a.py").write_text("value = 2\n", encoding="utf-8")
+        outside = self.root / "outside-diff.txt"
+        with self.assertRaises(ValueError):
+            dev_engine.review_diff(path=str(repo), base="--output=" + str(outside))
+        self.assertFalse(outside.exists())
+
+    def test_review_diff_accepts_valid_base(self):
+        if shutil.which("git") is None:
+            self.skipTest("git is not available on this host")
+        repo = self.root / "diff-valid-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Test"],
+            check=True,
+        )
+        (repo / "a.py").write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+        (repo / "a.py").write_text("value = eval(input())\n", encoding="utf-8")
+        result = dev_engine.review_diff(path=str(repo), base="HEAD")
+        self.assertIn("eval-exec", [item["rule"] for item in result["findings"]])
+
     def test_mcp_doctor_reads_skill_versions_and_configs(self):
         skills = self.root / "skills"
         skill = skills / "demo-skill"
@@ -600,6 +672,95 @@ class DevEngineTest(unittest.TestCase):
             text="again", apply=True,
         )
         self.assertTrue((workflow / "logs" / "2026-09-25.md.bak").is_file())
+
+    def test_workflow_state_does_not_follow_preexisting_temp_link(self):
+        workflow = self.root / ".workflow"
+        workflow.mkdir()
+        (workflow / "STATE.md").write_text("# Project state\n", encoding="utf-8")
+        outside = self.root / "outside-temp.txt"
+        outside.write_text("ORIGINAL\n", encoding="utf-8")
+        make_link_or_skip(self, outside, workflow / "STATE.md.tmp")
+        dev_engine.workflow_state(
+            str(self.root), action="append-file", file="STATE.md",
+            text="INJECTED", apply=True,
+        )
+        self.assertEqual(outside.read_text(encoding="utf-8"), "ORIGINAL\n")
+        self.assertIn("INJECTED", (workflow / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_workflow_state_does_not_follow_preexisting_backup_link(self):
+        workflow = self.root / ".workflow"
+        workflow.mkdir()
+        (workflow / "STATE.md").write_text("# Project state\n", encoding="utf-8")
+        outside = self.root / "outside-backup.txt"
+        outside.write_text("ORIGINAL\n", encoding="utf-8")
+        make_link_or_skip(self, outside, workflow / "STATE.md.bak")
+        dev_engine.workflow_state(
+            str(self.root), action="append-file", file="STATE.md",
+            text="INJECTED", apply=True,
+        )
+        self.assertEqual(outside.read_text(encoding="utf-8"), "ORIGINAL\n")
+        self.assertEqual(
+            (workflow / "STATE.md.bak").read_text(encoding="utf-8"),
+            "# Project state\n",
+        )
+
+    def test_workflow_state_rejects_symlinked_target(self):
+        workflow = self.root / ".workflow"
+        workflow.mkdir()
+        outside = self.root / "outside-target.txt"
+        outside.write_text("ORIGINAL\n", encoding="utf-8")
+        try:
+            os.symlink(str(outside), str(workflow / "STATE.md"))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink is not available on this host")
+        with self.assertRaises(ValueError):
+            dev_engine.workflow_state(
+                str(self.root), action="append-file", file="STATE.md",
+                text="INJECTED", apply=True,
+            )
+        self.assertEqual(outside.read_text(encoding="utf-8"), "ORIGINAL\n")
+
+    def test_workflow_state_rejects_symlinked_log_parent(self):
+        workflow = self.root / ".workflow"
+        workflow.mkdir()
+        outside = self.root / "outside-logs"
+        outside.mkdir()
+        try:
+            os.symlink(str(outside), str(workflow / "logs"))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink is not available on this host")
+        with self.assertRaises(ValueError):
+            dev_engine.workflow_state(
+                str(self.root), action="append-log", date="2026-10-31",
+                text="INJECTED", apply=True,
+            )
+        self.assertFalse((outside / "2026-10-31.md").exists())
+
+    def test_workflow_state_rejects_junction_log_parent(self):
+        workflow = self.root / ".workflow"
+        workflow.mkdir()
+        outside = self.root / "outside-junction-logs"
+        outside.mkdir()
+        make_dir_link_or_skip(self, outside, workflow / "logs")
+        with self.assertRaises(ValueError):
+            dev_engine.workflow_state(
+                str(self.root), action="append-log", date="2026-10-31",
+                text="INJECTED", apply=True,
+            )
+        self.assertFalse((outside / "2026-10-31.md").exists())
+
+    def test_workflow_state_replaces_hardlinked_target_only(self):
+        workflow = self.root / ".workflow"
+        workflow.mkdir()
+        outside = self.root / "outside-hardlinked-target.txt"
+        outside.write_text("ORIGINAL\n", encoding="utf-8")
+        make_link_or_skip(self, outside, workflow / "STATE.md")
+        dev_engine.workflow_state(
+            str(self.root), action="append-file", file="STATE.md",
+            text="INJECTED", apply=True,
+        )
+        self.assertEqual(outside.read_text(encoding="utf-8"), "ORIGINAL\n")
+        self.assertIn("INJECTED", (workflow / "STATE.md").read_text(encoding="utf-8"))
 
     def test_scan_skips_symlinks_and_binary_files(self):
         outside = self.root.parent / ("outside-" + self.root.name)
@@ -1699,7 +1860,10 @@ class SelfTestTest(unittest.TestCase):
         target = self.copy_source_repo()
         skill = target / "SKILL.md"
         text = skill.read_text(encoding="utf-8")
-        skill.write_text(text.replace("- v0.2.4", "- v0.0.1"), encoding="utf-8")
+        skill.write_text(
+            text.replace("- v" + dev_engine.VERSION, "- v0.0.1"),
+            encoding="utf-8",
+        )
         result = dev_engine.self_test(str(target))
         self.assertEqual(result["status"], "FAIL")
         entry = self.check(result, "skill-version-body")

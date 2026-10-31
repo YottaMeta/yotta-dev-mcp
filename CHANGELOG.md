@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.5 (2026-10-31)
+
+安全热修批次（ClawHub 0.2.4 扫描复核）：
+
+- `review_diff`：`base` 先解析为 commit SHA（`git rev-parse --verify --end-of-options`），
+  拒绝以 `-` 开头、含空白、超长或无法解析的 revision；防止 `--output=` 等 Git 选项注入
+  在仓库外写文件。
+- `workflow_state`：原子写入改为同目录随机独占临时文件 + `os.replace`；备份同样先写
+  随机临时文件；拒绝目标 / 祖先路径中的 symlink、junction 等 reparse point；预置
+  `.tmp` / `.bak` 链接不会再重定向写入。
+- 回归：新增 option injection、valid base、temp / backup / hardlink / junction 用例；
+  全量测试 **199（3 skip）**。
+
 ## v0.2.4 (2026-10-31)
 
 外部缺陷报告修复批次：

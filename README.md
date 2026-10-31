@@ -18,14 +18,14 @@ Deterministic local development tools exposed over a stdio MCP server.
 | `find_code` | Locate symbols and text with bounded results. |
 | `compress_output` | Compress long logs while keeping errors and head/tail context. |
 | `review_code` | Apply deterministic review rules with file, line and evidence. |
-| `review_diff` | Review only added lines in a unified diff. |
+| `review_diff` | Review only added lines in a unified diff; `base` resolves to a commit SHA. |
 | `mcp_doctor` | Inspect installed skills and MCP JSON configuration files. |
 | `scan_secrets` | Scan for credentials and high-entropy tokens with redacted evidence. |
 | `scan_dependencies` | Check manifests, lockfiles, insecure sources and typosquat suspicion. |
 | `check_publish_readiness` | Check version alignment, release files and package metadata. |
 | `run_checks` | Run whitelisted tests, lint or compile checks; execution is explicit. |
 | `scaffold_skill` | Plan or create a minimal skill scaffold; dry-run by default. |
-| `workflow_state` | Read `.workflow` and optionally append an explicit log entry. |
+| `workflow_state` | Read `.workflow` and optionally append an explicit log entry; writes are atomic and reject link paths. |
 
 Tools are read-only by default; `run_checks`, the L2-L4 policy checks in
 `verify_change`, the test subset in `self_test`, and `run_adapter` with

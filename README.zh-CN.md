@@ -18,14 +18,14 @@
 | `find_code` | 符号与文本定位，结果有数量上限。 |
 | `compress_output` | 压缩长日志，保留错误、错误栈和首尾上下文。 |
 | `review_code` | 规则化代码评审，输出文件、行号、证据与建议。 |
-| `review_diff` | 只评审 unified diff 的新增行。 |
+| `review_diff` | 只评审 unified diff 的新增行；`base` 先解析为 commit SHA。 |
 | `mcp_doctor` | 只读检查技能目录与 MCP JSON 配置。 |
 | `scan_secrets` | 密钥 / 凭据 / 高熵令牌扫描，证据强制脱敏。 |
 | `scan_dependencies` | 依赖清单、lockfile、来源与 typosquat 启发式检查。 |
 | `check_publish_readiness` | 版本对齐、发布文件与包元数据检查。 |
 | `run_checks` | 运行白名单测试 / lint / compile，执行必须显式开启。 |
 | `scaffold_skill` | 规划或生成最小技能脚手架，默认 dry-run。 |
-| `workflow_state` | 读取 `.workflow`，可选显式追加快照日志。 |
+| `workflow_state` | 读取 `.workflow`，可选显式追加快照日志；写入原子化并拒绝链接路径。 |
 
 默认只读；`run_checks`、`verify_change` 的 L2-L4 策略检查、`self_test` 的测试子集，
 以及 `run_adapter` 的 `action=run` 必须显式 `allow_execute=true`，

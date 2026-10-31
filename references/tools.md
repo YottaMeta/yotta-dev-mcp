@@ -203,7 +203,9 @@ Each finding contains `path`, `line`, `rule`, `severity`, `evidence`, `suggestio
 Input:
 
 - `diff_text` or `path` (one required).
-- `base` (optional git revision when `path` is used).
+- `base` (optional git revision when `path` is used). It is resolved to a commit SHA
+  before `git diff` runs; option-like, whitespace-containing, oversized or
+  unresolvable revisions are rejected.
 - `max_findings` (optional).
 
 Only added lines are reviewed. Output: `files`, `findings`, `truncated`.
@@ -305,4 +307,6 @@ Input: `root`, `action` (`read` / `append-log` / `append-file`), optional
 `date`, `text`, `file`, explicit `apply=true`.
 
 Output: `ok`, `files`, `missing`, `excerpts` for read; `target`, `applied`,
-`preview` for writes. Writes are atomic and keep a `.bak` of an existing file.
+`preview` for writes. Writes use a random exclusive temporary file plus
+`os.replace`, keep a `.bak` of an existing file, and reject target or ancestor
+paths that are symlinks, junctions or other reparse points.

@@ -13,8 +13,10 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import dev_contract
@@ -41,7 +43,7 @@ from dev_model import (
 )
 from dev_rules import REVIEW_RULES
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 
 
 
@@ -398,6 +400,28 @@ def _parse_added_lines(diff_text):
             line_no += 1
 
 
+def _resolve_git_commit(path, revision):
+    value = str(revision or "").strip()
+    if (
+        not value
+        or len(value) > 200
+        or value.startswith("-")
+        or any(char.isspace() for char in value)
+    ):
+        raise ValueError("base 不是有效 revision")
+    command = [
+        "git", "-C", str(path), "rev-parse", "--verify", "--quiet",
+        "--end-of-options", value + "^{commit}",
+    ]
+    proc = subprocess.run(command, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ValueError("base revision 无法解析: %s" % value)
+    commit = proc.stdout.strip()
+    if not re.match(r"^[0-9a-fA-F]{40,64}$", commit):
+        raise ValueError("base revision 解析结果非法")
+    return commit
+
+
 def review_diff(diff_text=None, path=None, base=None, max_findings=200):
     allowlist = {}
     allowlist_errors = []
@@ -407,7 +431,7 @@ def review_diff(diff_text=None, path=None, base=None, max_findings=200):
         allowlist, allowlist_errors = _load_review_allowlist(path)
         command = ["git", "-C", str(path), "diff", "--no-ext-diff", "--unified=0"]
         if base:
-            command.append(str(base))
+            command.append(_resolve_git_commit(path, base))
         proc = subprocess.run(command, capture_output=True, text=True)
         if proc.returncode != 0:
             raise ValueError("git diff 失败: %s" % (proc.stderr.strip() or proc.stdout.strip()))
@@ -917,15 +941,80 @@ def scaffold_skill(name, output_dir, apply=False, description=None):
     }
 
 
+def _write_temp_text(path, content):
+    descriptor, name = tempfile.mkstemp(
+        prefix="." + path.name + ".", suffix=".tmp", dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except BaseException:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    return Path(name)
+
+
+def _write_temp_bytes(path, data):
+    descriptor, name = tempfile.mkstemp(
+        prefix="." + path.name + ".", suffix=".tmp", dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+    except BaseException:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    return Path(name)
+
+
+def _preserve_mode(source, target):
+    try:
+        os.chmod(str(target), os.stat(str(source)).st_mode & 0o777)
+    except OSError:
+        pass
+
+
+def _is_link_like(path):
+    try:
+        info = os.lstat(str(path))
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(attributes & reparse_point)
+
+
+def _assert_no_symlink_path(path, root):
+    root = Path(root)
+    current = Path(path)
+    while True:
+        if _is_link_like(current):
+            raise ValueError("拒绝通过符号链接写入: %s" % current)
+        if current == root or current.parent == current:
+            break
+        current = current.parent
+
+
 def _atomic_write(path, content):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = None
     if path.exists():
         backup = path.with_suffix(path.suffix + ".bak")
-        shutil.copy2(str(path), str(backup))
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
+        temporary_backup = _write_temp_bytes(backup, path.read_bytes())
+        _preserve_mode(path, temporary_backup)
+        os.replace(str(temporary_backup), str(backup))
+    temporary = _write_temp_text(path, content)
+    if path.exists():
+        _preserve_mode(path, temporary)
     os.replace(str(temporary), str(path))
     return str(backup) if backup else None
 
@@ -964,6 +1053,7 @@ def workflow_state(root, action="read", date=None, text=None, file=None, apply=F
     body = (text or "").rstrip() + "\n"
     preview = body
     if apply:
+        _assert_no_symlink_path(target, Path(root))
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             existing = _read_text(target)

@@ -239,6 +239,18 @@ def _self_test_version_check(root, mode):
             return "FAIL", [{"code": "missing-version", "path": "SKILL.md",
                              "detail": "SKILL.md has no version field"}], \
                 "restore a valid SKILL.md version"
+        version_file = root / "VERSION"
+        if version_file.is_file():
+            file_version = _read_text(version_file).strip()
+            if not file_version:
+                return "FAIL", [{"code": "missing-version", "path": "VERSION",
+                                 "detail": "VERSION is empty"}], \
+                    "restore a valid VERSION file"
+            if file_version != version:
+                return "FAIL", [{
+                    "code": "version-mismatch", "path": "VERSION",
+                    "detail": "VERSION=%s SKILL.md=%s" % (file_version, version),
+                }], "align VERSION and SKILL.md versions"
         return "PASS", [], None
 
     versions = {}
@@ -270,6 +282,9 @@ def _self_test_version_check(root, mode):
         versions["engine"] = match.group(1) if match else None
     else:
         versions["engine"] = None
+    version_path = root / "VERSION"
+    if version_path.is_file():
+        versions["VERSION"] = _read_text(version_path).strip() or None
     missing = sorted(key for key, value in versions.items() if not value)
     if missing:
         return "FAIL", [{
@@ -281,7 +296,7 @@ def _self_test_version_check(root, mode):
         return "FAIL", [{
             "code": "version-mismatch", "path": "package.json",
             "detail": json.dumps(versions, ensure_ascii=False, sort_keys=True),
-        }], "align package, SKILL, CHANGELOG, server and engine versions"
+        }], "align package, SKILL, CHANGELOG, server, VERSION and engine versions"
     return "PASS", [], None
 
 def _self_test_skill_version_body(root):

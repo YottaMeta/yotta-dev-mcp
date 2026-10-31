@@ -482,7 +482,7 @@ def load_contract(root, contract_file=None):
     if not target.is_file():
         return _result(False, rel, None, [], version=None)
     try:
-        text = target.read_text(encoding="utf-8")
+        text = target.read_text(encoding="utf-8-sig")
     except OSError as exc:
         finding = {
             "code": "contract-unreadable", "severity": "critical",
@@ -677,7 +677,7 @@ def load_verification_policy(root, policy_file=None):
     if not target.is_file():
         return _verification_result(False, rel, None, [], version=None)
     try:
-        text = target.read_text(encoding="utf-8")
+        text = target.read_text(encoding="utf-8-sig")
     except OSError as exc:
         finding = {
             "code": "verification-unreadable", "severity": "critical",

@@ -4,15 +4,20 @@
 
 import json
 import hashlib
+import io
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 import dev_contract
 import dev_engine
+import dev_verify
 
 
 def write_tree(root, files):
@@ -581,6 +586,7 @@ class DevEngineTest(unittest.TestCase):
         (self.root / "README.md").write_text("# Demo\n", encoding="utf-8")
         (self.root / "LICENSE").write_text("MIT\n", encoding="utf-8")
         (self.root / "CHANGELOG.md").write_text("## v0.1.0 (2026-09-25)\n", encoding="utf-8")
+        (self.root / "VERSION").write_text("0.1.0\n", encoding="utf-8")
         result = dev_engine.check_publish_readiness(str(self.root))
         self.assertTrue(result["ok"])
 
@@ -610,8 +616,27 @@ class DevEngineTest(unittest.TestCase):
         (self.root / "README.md").write_text("# Demo\n", encoding="utf-8")
         (self.root / "LICENSE").write_text("MIT\n", encoding="utf-8")
         (self.root / "CHANGELOG.md").write_text("## v0.1.0 (2026-09-25)\n", encoding="utf-8")
+        (self.root / "VERSION").write_text("0.1.0\n", encoding="utf-8")
         result = dev_engine.check_publish_readiness(str(self.root))
         self.assertIn("version-mismatch", {item["code"] for item in result["issues"]})
+
+    def test_check_publish_readiness_requires_version_file(self):
+        (self.root / "package.json").write_text(
+            json.dumps({
+                "name": "@yottameta/demo",
+                "version": "0.1.0",
+                "repository": {"url": "git+https://github.com/YottaMeta/demo.git"},
+                "publishConfig": {"access": "public"},
+            }),
+            encoding="utf-8",
+        )
+        (self.root / "SKILL.md").write_text("---\nname: demo\nversion: 0.1.0\n---\n# Demo\n", encoding="utf-8")
+        (self.root / "README.md").write_text("# Demo\n", encoding="utf-8")
+        (self.root / "LICENSE").write_text("MIT\n", encoding="utf-8")
+        (self.root / "CHANGELOG.md").write_text("## v0.1.0 (2026-09-25)\n", encoding="utf-8")
+        result = dev_engine.check_publish_readiness(str(self.root))
+        self.assertFalse(result["ok"])
+        self.assertIn("missing-file", {item["code"] for item in result["issues"]})
 
     def test_run_checks_uses_whitelist(self):
         (self.root / "test_sample.py").write_text(
@@ -1084,8 +1109,21 @@ class ArchitectureReviewTest(unittest.TestCase):
         path.write_text(text, encoding="utf-8-sig")
         result = dev_engine.architecture_review(str(self.root))
         self.assertTrue(result["contract"]["present"])
+        self.assertTrue(result["contract"]["ok"], result["contract"]["findings"])
+        self.assertEqual(result["contract"]["findings"], [])
+        self.assertEqual(result["status"], "PASS", result["evidence"])
         self.assertNotIn("contract-invalid-json",
-                         {item["kind"] for item in result["unknowns"]})
+                         {item["code"] for item in result["contract"]["findings"]})
+
+    def test_review_reports_invalid_contract_json(self):
+        path = self.root / ".yotta" / "architecture.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{", encoding="utf-8")
+        result = dev_engine.architecture_review(str(self.root))
+        self.assertFalse(result["contract"]["ok"])
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("contract-invalid-json",
+                      {item["code"] for item in result["contract"]["findings"]})
 
     def test_review_zero_evidence_rule_is_unknown(self):
         self.write_contract(architecture_fixture_contract())
@@ -1298,6 +1336,30 @@ class ImpactAnalysisTest(unittest.TestCase):
 
     def node_map(self, result):
         return {item["path"]: item for item in result["cone"]["nodes"]}
+
+    def test_impact_analysis_cli_reads_utf8_bom_diff(self):
+        self.write_contract()
+        diff_file = self.root / "change.diff"
+        diff_file.write_text(
+            "--- a/src/core/store.py\n"
+            "+++ b/src/core/store.py\n"
+            "@@ -1 +1 @@\n"
+            "-VALUE = 1\n"
+            "+VALUE = 2\n",
+            encoding="utf-8-sig",
+        )
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            with mock.patch.object(
+                sys, "argv",
+                ["yotta-dev-mcp", "impact-analysis", str(self.root),
+                 "--diff-file", str(diff_file)],
+            ):
+                code = dev_engine.main()
+        self.assertEqual(code, 0)
+        payload = json.loads(buffer.getvalue())
+        changed = {item["path"]: item for item in payload["changed"]}
+        self.assertEqual(changed["src/core/store.py"]["change"], "modified")
 
     def test_impact_cone_from_changed_file(self):
         self.write_contract()
@@ -1559,6 +1621,21 @@ class VerifyChangeTest(unittest.TestCase):
         self.assertEqual(entry["status"], "FAIL")
         self.assertEqual(entry["evidence"][0]["path"], "src/core/broken.py")
         self.assertGreaterEqual(entry["evidence"][0]["line"], 1)
+
+    def test_verify_change_accepts_utf8_bom_changed_files(self):
+        (self.root / "src" / "core" / "bom_ok.py").write_text(
+            "def okay():\n    return 1\n", encoding="utf-8-sig"
+        )
+        (self.root / "src" / "core" / "bom_ok.json").write_text(
+            '{"ok": true}\n', encoding="utf-8-sig"
+        )
+        result = dev_engine.verify_change(
+            str(self.root),
+            changed_files=["src/core/bom_ok.py", "src/core/bom_ok.json"],
+        )
+        entry = self.ledger_entry(result, "L0-syntax")
+        self.assertEqual(entry["status"], "PASS", entry)
+        self.assertEqual(entry["evidence"], [])
 
     def test_verify_change_fails_on_architecture_violation_in_scope(self):
         write_tree(self.root, {"src/core/leak.py": "from src.ui.view import VALUE\n"})
@@ -1959,6 +2036,64 @@ class SelfTestTest(unittest.TestCase):
     def test_self_test_rejects_missing_root(self):
         with self.assertRaises(ValueError):
             dev_engine.self_test(str(self.root / "nope"))
+
+
+class GitBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        try:
+            self.git("init")
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git is not available")
+        self.git("config", "user.email", "test@example.com")
+        self.git("config", "user.name", "Test")
+        (self.root / "data.txt").write_text("hello\n", encoding="utf-8")
+        self.git("add", "data.txt")
+        self.git("commit", "-m", "initial")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", "-C", str(self.root)] + list(args),
+            check=True, capture_output=True, text=True,
+        )
+
+    def configure_textconv(self, marker):
+        script = self.root / "textconv.py"
+        script.write_text(
+            "import pathlib\n"
+            "import sys\n"
+            "pathlib.Path(%r).write_text('executed', encoding='utf-8')\n"
+            "print(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+            % str(marker),
+            encoding="utf-8",
+        )
+        (self.root / ".gitattributes").write_text(
+            "data.txt diff=demo\n", encoding="utf-8"
+        )
+        self.git("add", ".gitattributes")
+        self.git("config", "diff.demo.textconv", "%s %s" % (sys.executable, script))
+        self.git("commit", "-m", "textconv attributes")
+
+    def test_review_diff_does_not_run_textconv(self):
+        marker = self.root / "textconv-marker.txt"
+        self.configure_textconv(marker)
+        (self.root / "data.txt").write_text("hello\nworld\n", encoding="utf-8")
+        result = dev_engine.review_diff(path=str(self.root))
+        self.assertFalse(marker.exists())
+        self.assertIn("data.txt", result["files"])
+
+    def test_git_history_scan_does_not_run_textconv(self):
+        marker = self.root / "textconv-marker.txt"
+        self.configure_textconv(marker)
+        (self.root / "data.txt").write_text("hello\nworld\n", encoding="utf-8")
+        self.git("add", "data.txt")
+        self.git("commit", "-m", "change")
+        dev_engine.scan_secrets(path=str(self.root), include_git_history=True)
+        self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

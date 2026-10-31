@@ -208,6 +208,29 @@ class McpDoctorTest(unittest.TestCase):
         self.assertEqual(entry["status"], "checked")
         self.assertEqual(entry["configs"][0]["servers"], ["mine"])
 
+    def test_custom_registry_with_utf8_bom_is_discovered(self):
+        registry = self.root / "registry-bom.json"
+        registry.write_text(
+            json.dumps({
+                "hosts": [{
+                    "id": "myclient",
+                    "label": "My Client",
+                    "candidates": ["{home}/.myclient/mcp.json"],
+                    "formats": ["json"],
+                    "server_keys": ["mcpServers"],
+                }]
+            }),
+            encoding="utf-8-sig",
+        )
+        self.write(
+            self.home / ".myclient" / "mcp.json",
+            json.dumps({"mcpServers": {"mine": {}}}),
+        )
+        result = self.doctor(environ={"YOTTA_DEV_MCP_CONFIG_REGISTRY": str(registry)})
+        entry = self.coverage(result, "myclient")
+        self.assertEqual(entry["status"], "checked")
+        self.assertEqual(entry["configs"][0]["servers"], ["mine"])
+
     def test_malformed_and_oversized_configs_are_reported_without_content(self):
         broken = self.write(self.root / "broken.json", "{not json secret-value")
         big = self.write(self.root / "big.json", '{"mcpServers": {}}')

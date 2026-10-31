@@ -83,7 +83,7 @@ def _verify_syntax(changed, root):
             })
             continue
         try:
-            text = target.read_text(encoding="utf-8")
+            text = target.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeError) as exc:
             unknown.append({
                 "path": rel,

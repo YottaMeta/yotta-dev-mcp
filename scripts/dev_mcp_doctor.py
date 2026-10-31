@@ -471,7 +471,7 @@ def _custom_hosts(environ, home, cwd):
     if registry_path:
         path = Path(registry_path)
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             payload = None
         if isinstance(payload, dict) and isinstance(payload.get("hosts"), list):

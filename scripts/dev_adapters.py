@@ -167,7 +167,7 @@ def _find_executable(root, names):
 
 def _read_text(path):
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):
         return ""
 

@@ -93,6 +93,16 @@ class DevContractTest(unittest.TestCase):
         self.assertEqual(result["rules"], ["core-no-ui"])
         self.assertEqual(result["findings"], [])
 
+    def test_utf8_bom_contract_is_valid(self):
+        path = self.write_contract(valid_contract())
+        path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8-sig")
+        result = dev_contract.load_contract(str(self.root))
+        self.assertTrue(result["present"])
+        self.assertTrue(result["ok"], result["findings"])
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(result["version"], 1)
+
     def test_missing_contract_is_absent_not_an_error(self):
         result = dev_contract.load_contract(str(self.root))
         self.assertFalse(result["present"])
@@ -369,6 +379,17 @@ class VerificationPolicyTest(unittest.TestCase):
         self.assertEqual(second["timeout"], 300)
         self.assertIs(second["required"], False)
 
+    def test_utf8_bom_policy_is_valid(self):
+        path = self.write_policy(self.valid_policy())
+        path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8-sig")
+        result = dev_contract.load_verification_policy(str(self.root))
+        self.assertTrue(result["present"])
+        self.assertTrue(result["ok"], result["findings"])
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(result["version"], 1)
+        self.assertEqual([item["id"] for item in result["checks"]],
+                         ["unit-tests", "integration-tests"])
+
     def test_missing_policy_is_optional(self):
         result = dev_contract.load_verification_policy(str(self.root))
         self.assertFalse(result["present"])
@@ -441,6 +462,20 @@ class VerificationPolicyTest(unittest.TestCase):
         dev_contract.load_verification_policy(str(self.root))
         after = sorted(item.name for item in folder.iterdir())
         self.assertEqual(before, after)
+
+
+class ProductReadEncodingTest(unittest.TestCase):
+    def test_product_code_has_no_plain_utf8_read_text(self):
+        scripts = Path(__file__).resolve().parent
+        offenders = []
+        for path in sorted(scripts.glob("*.py")):
+            if path.name.startswith("test_"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            for line_no, line in enumerate(text.splitlines(), 1):
+                if 'read_text(encoding="utf-8")' in line:
+                    offenders.append("%s:%d" % (path.name, line_no))
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

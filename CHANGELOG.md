@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.2.6 (2026-10-31)
+
+BOM 契约与测试门禁批次（第二轮复核）：
+
+- `.yotta/architecture.json`、`.yotta/verification.json`、changed `.py` / `.json`、
+  adapter 配置、custom host registry 与 `--diff-file` 的结构化读取统一 `utf-8-sig`；
+  Windows PowerShell `Set-Content -Encoding utf8` 写出的 BOM 文件不再误报
+  `contract-invalid-json` / `verification-invalid-json` / `U+FEFF`。
+- 修正 `test_review_reads_utf8_bom_contract` 假绿：断言 `contract.ok` / `findings` /
+  总状态，而不是只断言 `present` 和 `unknowns.kind`。
+- 新增 BOM 矩阵、静态审计（产品代码禁止 `read_text(encoding="utf-8")`）、
+  RED→GREEN 证据与测试规范 `docs\元开-测试规范-2026-10-31.md`。
+- 安装器：目标根 / 嵌套目录 / 文件遇到 symlink 或 junction 一律 fail-closed；
+  残留清理改为不跟随链接的安全删除；新增 junction 根 / 嵌套链接回归。
+- Git 边界：`review_diff` 与 `scan_secrets` 的 git history 加 `--no-textconv`；
+  新增 textconv 驱动不得执行的回归。
+- 根级 `VERSION`：加入 npm files、handoff keep、安装器、installed self-test 与
+  `check_publish_readiness` 版本对齐；新增缺失 / mismatch 回归。
+- 文档：`npx` 锁 `0.2.6`，明确 `-y` 是 npx 开关、`-g` 不再强制 `--yes`；
+  `mcp_doctor` 补多宿主 / 多根 JSON / JSONC / TOML 子集说明。
+- `npm test` 纳入 `test_mcp_doctor.py`，custom host registry / mcp_doctor 的 BOM
+  与配置发现回归不再落在全量测试之外。
+- 全量 `npm test`：**227（3 skip）**，其中 contract 33 / adapters 18 /
+  engine 126（3 skip）/ mcp_doctor 14 / installer 4 / MCP 32。
+- 真实 Windows PowerShell 5.1 `Set-Content -Encoding utf8` 生成的 BOM 契约 /
+  策略 / changed source 夹具全链路 PASS。
+
 ## v0.2.5 (2026-10-31)
 
 安全热修批次（ClawHub 0.2.4 扫描复核）：

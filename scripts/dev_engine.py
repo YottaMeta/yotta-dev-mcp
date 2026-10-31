@@ -43,7 +43,7 @@ from dev_model import (
 )
 from dev_rules import REVIEW_RULES
 
-VERSION = "0.2.5"
+VERSION = "0.2.6"
 
 
 
@@ -429,7 +429,8 @@ def review_diff(diff_text=None, path=None, base=None, max_findings=200):
         if not path:
             raise ValueError("review_diff 需要 diff_text 或 path")
         allowlist, allowlist_errors = _load_review_allowlist(path)
-        command = ["git", "-C", str(path), "diff", "--no-ext-diff", "--unified=0"]
+        command = ["git", "-C", str(path), "diff", "--no-ext-diff",
+                   "--no-textconv", "--unified=0"]
         if base:
             command.append(_resolve_git_commit(path, base))
         proc = subprocess.run(command, capture_output=True, text=True)
@@ -612,7 +613,8 @@ def _git_history_text(root):
     """Return bounded git diff text for secret scanning; never fail the scan."""
     try:
         process = subprocess.run(
-            ["git", "-C", str(root), "log", "-p", "--all", "--no-ext-diff", "--max-count=50"],
+            ["git", "-C", str(root), "log", "-p", "--all", "--no-ext-diff",
+             "--no-textconv", "--max-count=50"],
             capture_output=True, text=True, timeout=30,
         )
         if process.returncode != 0:
@@ -763,7 +765,7 @@ def check_publish_readiness(path):
     root = Path(path)
     if not root.exists() or not root.is_dir():
         raise ValueError("check_publish_readiness 需要目录: %s" % path)
-    required = ["package.json", "SKILL.md", "README.md", "LICENSE", "CHANGELOG.md"]
+    required = ["package.json", "SKILL.md", "README.md", "LICENSE", "CHANGELOG.md", "VERSION"]
     files = {}
     issues = []
     for name in required:
@@ -789,6 +791,9 @@ def check_publish_readiness(path):
     if changelog_path.is_file():
         match = re.search(r"(?m)^##\s+v?(\d+\.\d+\.\d+)", _read_text(changelog_path))
         versions["CHANGELOG.md"] = match.group(1) if match else None
+    version_path = root / "VERSION"
+    if version_path.is_file():
+        versions["VERSION"] = _read_text(version_path).strip() or None
     script_versions = []
     for script in sorted(root.glob("scripts/*.py")):
         try:
@@ -1334,14 +1339,14 @@ def main():
     elif args.command == "impact-analysis":
         diff_text = None
         if args.diff_file:
-            diff_text = Path(args.diff_file).read_text(encoding="utf-8")
+            diff_text = Path(args.diff_file).read_text(encoding="utf-8-sig")
         result = impact_analysis(args.path, changed_files=args.changed, diff=diff_text,
                                  symbols=args.symbol, depth=args.depth,
                                  contract_file=args.contract)
     elif args.command == "verify-change":
         diff_text = None
         if args.diff_file:
-            diff_text = Path(args.diff_file).read_text(encoding="utf-8")
+            diff_text = Path(args.diff_file).read_text(encoding="utf-8-sig")
         result = verify_change(
             args.path, changed_files=args.changed, diff=diff_text,
             symbols=args.symbol, depth=args.depth, levels=args.level,

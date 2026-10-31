@@ -19,7 +19,7 @@
 | `compress_output` | 压缩长日志，保留错误、错误栈和首尾上下文。 |
 | `review_code` | 规则化代码评审，输出文件、行号、证据与建议。 |
 | `review_diff` | 只评审 unified diff 的新增行；`base` 先解析为 commit SHA。 |
-| `mcp_doctor` | 只读检查技能目录与 MCP JSON 配置。 |
+| `mcp_doctor` | 只读发现多宿主 / 多根 MCP 配置（JSON / JSONC / TOML 子集）与技能目录覆盖；只列 server 名，不含 command / env。 |
 | `scan_secrets` | 密钥 / 凭据 / 高熵令牌扫描，证据强制脱敏。 |
 | `scan_dependencies` | 依赖清单、lockfile、来源与 typosquat 启发式检查。 |
 | `check_publish_readiness` | 版本对齐、发布文件与包元数据检查。 |
@@ -67,18 +67,18 @@ dispatch 是否漂移、写 / 执行闸门是否仍 fail-closed，并用临时�
 ### 启动 MCP server
 
 ```bash
-npx -y @yottameta/yotta-dev-mcp
+npx -y @yottameta/yotta-dev-mcp@0.2.6
 ```
 
 ### 安装技能载荷
 
 ```bash
-npx -y @yottameta/yotta-dev-mcp --agent codex
-npx -y @yottameta/yotta-dev-mcp --dir <技能目录>
-npx -y @yottameta/yotta-dev-mcp --list
+npx -y @yottameta/yotta-dev-mcp@0.2.6 --agent codex
+npx -y @yottameta/yotta-dev-mcp@0.2.6 --dir <技能目录>
+npx -y @yottameta/yotta-dev-mcp@0.2.6 --list
 ```
 
-安装器只写入显式目标。`--global` 必须同时给 `--yes`；`--dry-run` 只预览不写入。
+安装器只写入显式目标。`-g/--global` 会装到所有已识别的用户级目录；`--yes` 仅为兼容保留，不再强制。`npx -y` 是 npx 的自动安装开关，不是安装器的 `--yes`；`--dry-run` 只预览不写入。
 
 其他安装方式：
 

@@ -19,7 +19,7 @@ Deterministic local development tools exposed over a stdio MCP server.
 | `compress_output` | Compress long logs while keeping errors and head/tail context. |
 | `review_code` | Apply deterministic review rules with file, line and evidence. |
 | `review_diff` | Review only added lines in a unified diff; `base` resolves to a commit SHA. |
-| `mcp_doctor` | Inspect installed skills and MCP JSON configuration files. |
+| `mcp_doctor` | Read-only multi-host / multi-root MCP config discovery (JSON / JSONC / TOML subset) plus skill-dir coverage; returns server names only, never command/env. |
 | `scan_secrets` | Scan for credentials and high-entropy tokens with redacted evidence. |
 | `scan_dependencies` | Check manifests, lockfiles, insecure sources and typosquat suspicion. |
 | `check_publish_readiness` | Check version alignment, release files and package metadata. |
@@ -75,19 +75,21 @@ Schema, glob rules, finding codes and cone fields: `references/architecture-cont
 ### Start the MCP server
 
 ```bash
-npx -y @yottameta/yotta-dev-mcp
+npx -y @yottameta/yotta-dev-mcp@0.2.6
 ```
 
 ### Install the skill payload
 
 ```bash
-npx -y @yottameta/yotta-dev-mcp --agent codex
-npx -y @yottameta/yotta-dev-mcp --dir <skill-directory>
-npx -y @yottameta/yotta-dev-mcp --list
+npx -y @yottameta/yotta-dev-mcp@0.2.6 --agent codex
+npx -y @yottameta/yotta-dev-mcp@0.2.6 --dir <skill-directory>
+npx -y @yottameta/yotta-dev-mcp@0.2.6 --list
 ```
 
-The installer uses explicit targets. `--global` additionally requires `--yes`, and
-`--dry-run` prints the target without writing.
+The installer uses explicit targets. `-g/--global` installs to all detected user-level
+directories; `--yes` is accepted for compatibility and is not required. `npx -y` is
+npx's automatic-install flag, not the installer's `--yes`. `--dry-run` prints the
+target without writing.
 
 Other installation methods:
 

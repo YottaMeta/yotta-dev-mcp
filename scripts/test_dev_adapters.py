@@ -80,6 +80,17 @@ class AdapterProbeTest(unittest.TestCase):
         self.assertTrue(by_id["repomix"]["available"])
         self.assertTrue(by_id["repomix"]["ready"])
 
+    def test_config_detection_accepts_utf8_bom(self):
+        (self.root / ".importlinter").write_text(
+            "[importlinter]\nroot_package = app\n", encoding="utf-8-sig"
+        )
+        self.assertEqual(
+            dev_adapters._find_config(
+                self.root, dev_adapters.ADAPTER_SPECS["import-linter"]
+            ),
+            ".importlinter",
+        )
+
     def test_list_marks_missing_config_unready(self):
         (self.root / "node_modules" / ".bin").mkdir(parents=True)
         write_executable(self.root / "node_modules" / ".bin" / "depcruise", "#!/bin/sh\n")

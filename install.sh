@@ -71,9 +71,6 @@ skill_version() {
   if [ -z "$v" ]; then
     v="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$pkg" 2>/dev/null | head -n 1 || true)"
   fi
-  if [ -z "$v" ] && [ -f "$SOURCE_DIR/VERSION" ]; then
-    v="$(tr -d '[:space:]' < "$SOURCE_DIR/VERSION" 2>/dev/null || true)"
-  fi
   printf '%s' "$v"
 }
 
@@ -128,6 +125,15 @@ assert_safe_target() {
   return 0
 }
 
+is_managed_hub_link() {
+  local p="$1" real parent
+  [ -L "$p" ] || return 1
+  real="$(resolve_path "$p")" || return 1
+  [ "$(basename "$real")" = "$SKILL_NAME" ] || return 1
+  parent="$(dirname "$real")"
+  [ -f "$parent/.yotta-hub.json" ] || [ -f "$parent/.yotta-links.json" ]
+}
+
 assert_no_nested_links() {
   local dest="$1"
   [ -d "$dest" ] || return 0
@@ -161,12 +167,12 @@ clean_residue() {
 # 任意层级跳过缓存（__pycache__ / .pytest_cache / .mypy_cache / *.pyc / *.pyo）。
 copy_tree() {
   local src="$1" dst="$2" top="$3" entry base
-  if [ -L "$dst" ]; then
+  if [ "$top" != "1" ] && [ -L "$dst" ]; then
     echo "安装失败：目标目录包含符号链接，拒绝写入：$dst" >&2
     return 1
   fi
-  mkdir -p "$dst"
-  if [ -L "$dst" ]; then
+  mkdir -p "$dst" || return 1
+  if [ "$top" != "1" ] && [ -L "$dst" ]; then
     echo "安装失败：目标目录包含符号链接，拒绝写入：$dst" >&2
     return 1
   fi
@@ -211,7 +217,7 @@ install_to() {
     echo "安装失败：目标路径已存在且不是目录：$base" >&2
     return 1
   fi
-  if [ -L "$dest" ]; then
+  if [ -L "$dest" ] && ! is_managed_hub_link "$dest"; then
     echo "安装失败：技能目录是符号链接，拒绝跟随：$dest" >&2
     return 1
   fi
@@ -227,6 +233,10 @@ install_to() {
   fi
   clean_residue "$dest"
   mkdir -p "$dest" || return 1
+  if [ -L "$dest" ] && ! is_managed_hub_link "$dest"; then
+    echo "安装失败：技能目录在安装期间变成了链接，拒绝写入：$dest" >&2
+    return 1
+  fi
   copy_tree "$SOURCE_DIR" "$dest" 1 || return 1
   if [ ! -f "$dest/SKILL.md" ]; then
     echo "安装失败：结果缺少 SKILL.md" >&2

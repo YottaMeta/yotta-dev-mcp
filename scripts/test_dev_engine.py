@@ -39,6 +39,14 @@ def make_link_or_skip(testcase, source, link):
             testcase.skipTest("symlink/hardlink is not available on this host")
 
 
+def make_hardlink_or_skip(testcase, source, link):
+    try:
+        os.link(str(source), str(link))
+        return "hardlink"
+    except (OSError, NotImplementedError):
+        testcase.skipTest("hardlink is not available on this host")
+
+
 def make_dir_link_or_skip(testcase, source, link):
     try:
         os.symlink(str(source), str(link), target_is_directory=True)
@@ -779,7 +787,7 @@ class DevEngineTest(unittest.TestCase):
         workflow.mkdir()
         outside = self.root / "outside-hardlinked-target.txt"
         outside.write_text("ORIGINAL\n", encoding="utf-8")
-        make_link_or_skip(self, outside, workflow / "STATE.md")
+        make_hardlink_or_skip(self, outside, workflow / "STATE.md")
         dev_engine.workflow_state(
             str(self.root), action="append-file", file="STATE.md",
             text="INJECTED", apply=True,

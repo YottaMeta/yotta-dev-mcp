@@ -1,7 +1,7 @@
 ---
 name: yotta-dev-mcp
 description: 元开（yotta-dev-mcp）—— 本地、确定性的开发工具 MCP，把只读默认的开发能力暴露为 stdio MCP server：repo_map / system_model / architecture_review / impact_analysis / verify_change / self_test / run_adapter / find_code / compress_output / review_code / review_diff / mcp_doctor / scan_secrets / scan_dependencies / check_publish_readiness / run_checks / scaffold_skill / workflow_state。触发：让 AI 在陌生项目里先做结构盘点、构建系统模型或架构契约（.yotta/architecture.json）、按契约评审架构、分析改动影响锥与回归面、按验证阶梯产出证据账本、对元开自身做完整性 / 反证自测、探测或显式运行 import-linter / dependency-cruiser / Repomix 可选适配器、定位代码、评审改动、扫描密钥/依赖、检查发布就绪、运行白名单检查、生成脚手架或读取 .workflow 状态时；或用户说 元开 / 开发能力 MCP / yotta-dev-mcp / 代码库地图 / 系统模型 / 架构契约 / 架构评审 / 影响分析 / 验证账本 / 反证自测 / 代码评审 MCP / 适配器 等。边界：Python 3.8+ 标准库、离线默认；除 run_checks（显式 allow_execute）、verify_change 的 L2-L4 策略检查（显式 allow_execute）与 self_test 的测试子集（显式 allow_execute）、run_adapter 的 action=run（显式 allow_execute）、scaffold_skill / workflow_state 的显式 apply 外均为只读；不上传源码、不自动修改、不提交、不联网查询包是否存在、不自动安装或下载适配器。
-version: 0.2.7
+version: 0.2.8
 license: MIT
 ---
 
@@ -28,7 +28,7 @@ license: MIT
 启动命令：
 
 ```bash
-npx -y @yottameta/yotta-dev-mcp@0.2.7
+npx -y @yottameta/yotta-dev-mcp@0.2.8
 ```
 
 `npx -y` 是 npx 的自动安装开关，不是安装器的 `--yes`；`-g/--global` 不再强制 `--yes`。
@@ -101,6 +101,7 @@ python scripts/yotta_dev_mcp.py --tools full   # 18 工具（默认）
 
 ## 当前版本
 
+- v0.2.8（2026-11-05）：质量门禁批次——发布前测试接入；测试子进程统一 UTF-8；自扫测试样本去字面量；版本五件对齐。
 - v0.2.7（2026-10-31）：BOM 契约修复——`.yotta/architecture.json`、`.yotta/verification.json`、changed `.py` / `.json`、adapter 配置、custom host registry 与 `--diff-file` 的结构化读取统一 `utf-8-sig`；修正 BOM 契约假绿用例，新增 BOM 矩阵、静态编码门禁与 RED→GREEN 证据；测试规范见 `docs/元开-测试规范-2026-10-31.md`。
 - v0.2.5（2026-10-31）：安全热修——`review_diff` 的 `base` 先解析为 commit SHA，拒绝 Git 选项注入；`workflow_state` 改为随机独占临时文件 + 原子替换，备份同样原子化，并拒绝 symlink / junction 等链接路径；新增 option injection、temp / backup / hardlink / junction 回归。
 - v0.2.4（2026-10-31）：外部缺陷报告修复——`architecture_review` 修 BOM 假 PASS 与零证据 PASS；legacy `initialize` 报告当前工具档位；`review_code` / `review_diff` 修 `.exec(` 与字符串内待办标记误报并新增精确 allowlist；补齐临时 / 备份目录忽略；`scan_secrets` 补弱口令并去重；`find_code` 支持 `def ` 前缀；`self_test` 增加当前版本正文检查。

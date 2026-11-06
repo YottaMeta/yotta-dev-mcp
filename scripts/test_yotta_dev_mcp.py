@@ -3,6 +3,7 @@
 """Protocol and end-to-end tests for the yotta-dev-mcp stdio server."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -354,6 +355,9 @@ class YottaDevMcpTest(unittest.TestCase):
             input=stdin,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=20,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -407,7 +411,8 @@ class ToolProfileTest(unittest.TestCase):
         stdin = "".join(json.dumps(item) + "\n" for item in messages)
         proc = subprocess.run(
             [sys.executable, str(script), "--tools", "core"],
-            input=stdin, capture_output=True, text=True, timeout=20)
+            input=stdin, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env={**os.environ, "PYTHONIOENCODING": "utf-8"}, timeout=20)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         tools = json.loads(proc.stdout.splitlines()[0])["result"]["tools"]
         self.assertEqual(len(tools), 5)
@@ -416,7 +421,8 @@ class ToolProfileTest(unittest.TestCase):
         script = Path(__file__).with_name("yotta_dev_mcp.py")
         proc = subprocess.run(
             [sys.executable, str(script), "--tools", "tiny"],
-            input="", capture_output=True, text=True, timeout=20)
+            input="", capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env={**os.environ, "PYTHONIOENCODING": "utf-8"}, timeout=20)
         self.assertEqual(proc.returncode, 2)
         self.assertIn("未知工具分组", proc.stderr)
 

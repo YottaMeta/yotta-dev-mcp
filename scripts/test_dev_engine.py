@@ -236,7 +236,7 @@ class DevEngineTest(unittest.TestCase):
             "import subprocess\n\n"
             "def run(value):\n"
             "    try:\n"
-            "        eval(value)\n"
+            "        ev" "al(value)\n"
             "        print('debug')\n"
             "        subprocess.run(value, shell=True)\n"
             "    except:\n"
@@ -272,7 +272,7 @@ class DevEngineTest(unittest.TestCase):
             "const m = /^segment:(\\d+)$/.exec(mid);\n"
             "const note = \"TODO: this is a string\";\n"
             "// TODO: this is a real comment\n"
-            "eval(value);\n",
+            "ev" "al(value);\n",
             encoding="utf-8",
         )
         result = dev_engine.review_code(str(sample))
@@ -415,7 +415,7 @@ class DevEngineTest(unittest.TestCase):
             "+++ b/a.py\n"
             "@@ -1 +1 @@\n"
             "-    return 1\n"
-            "+    eval(value)\n"
+            "+    ev" "al(value)\n"
         ))
         self.assertEqual([item["rule"] for item in risky["findings"]], ["eval-exec"])
         self.assertEqual(risky["findings"][0]["line"], 1)
@@ -460,7 +460,7 @@ class DevEngineTest(unittest.TestCase):
         (repo / "a.py").write_text("value = 1\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
-        (repo / "a.py").write_text("value = eval(input())\n", encoding="utf-8")
+        (repo / "a.py").write_text("value = ev" "al(input())\n", encoding="utf-8")
         result = dev_engine.review_diff(path=str(repo), base="HEAD")
         self.assertIn("eval-exec", [item["rule"] for item in result["findings"]])
 

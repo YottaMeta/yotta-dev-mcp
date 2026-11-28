@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.10 (2026-11-28)
+
+- 官方 MCP Registry 元数据：`package.json` 新增 `mcpName`，`server.json` 描述收敛到 100 字符内并补 `title`，新增 `.github/workflows/publish-mcp.yml`。
+- MCP 工具、参数、返回结构与只读默认边界不变。
+
 ## v0.2.9 (2026-11-24)
 
 - 产品边界文案由 `YottaCode` 切换为 `YottaWeave`。

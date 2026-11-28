@@ -1,17 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.YottaMeta/yotta-dev-mcp",
-  "description": "YuanKai (yotta-dev-mcp): deterministic local development tools over stdio MCP, covering code mapping, architecture contract review, change impact cones, L0-L5 verification ledgers, integrity self-tests, optional explicit import-linter / dependency-cruiser / Repomix adapters, code review, secret/dependency scanning, release checks, whitelisted checks, scaffolding and workflow state.",
+  "title": "YuanKai (yotta-dev-mcp)",
+  "description": "Local dev tools over stdio MCP: repo map, impact analysis, verification and release checks.",
   "repository": {
     "url": "https://github.com/YottaMeta/yotta-dev-mcp",
     "source": "github"
   },
-  "version": "0.2.9",
+  "version": "0.2.10",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@yottameta/yotta-dev-mcp",
-      "version": "0.2.9",
+      "version": "0.2.10",
       "transport": {
         "type": "stdio"
       }
